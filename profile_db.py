@@ -751,6 +751,15 @@ def db_profile_card_instances(user_id, conn=None):
     ).fetchall()
 
 
+def db_card_instance_socket_counts(user_id, conn=None):
+    """Return {instance_id: socket_count} for a user's socketable cards."""
+    return dict(_profile_connection(conn).execute(
+        "SELECT ci.instance_id, ct.socket_count FROM card_instances ci "
+        "JOIN card_templates ct ON ct.guid=ci.template_guid "
+        "WHERE ci.user_id=? AND ct.socket_count > 0", (user_id,)
+    ).fetchall())
+
+
 def db_collection_card_list(user_id, conn=None):
     return _profile_connection(conn).execute(
         "SELECT ct.guid, ct.name, ct.cost, ct.attack, ct.defense, col.quantity "

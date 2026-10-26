@@ -212,6 +212,7 @@ from profile_db import (db_find_deck_owner, db_deck_champion_name,
                              db_update_champion_talents, db_champion_profile,
                              db_delete_champion,
                         db_profile_card_instances, db_card_instance_art,
+                        db_card_instance_socket_counts,
                         db_set_card_instance_extended_art,
                         db_collection_card_list, db_card_instance_display)
 from tournament_db import (db_tournament_room_for_game,
@@ -3889,6 +3890,23 @@ class HCPHandler(ProfileStreamMixin):
         from gamedata import DEFAULT_RECORD_STORE
         card = DEFAULT_RECORD_STORE.get("CardTemplate", str(tpl_guid).lower())
         return bool(card and card.has_variable_cost)
+
+    def _sanitize_active_gems(self, user_id, active_gems):
+        """Drop ActiveGems entries for cards without sockets.
+
+        The deck editor can save one card's gems against every instance in
+        the deck; the client's DeckValidator then reports "More than 4 of a
+        single gem type" for a deck that only socketed one card.
+        """
+        if not active_gems or not user_id:
+            return active_gems or {}
+        sockets = db_card_instance_socket_counts(user_id, conn=_db)
+        kept = {key: value for key, value in active_gems.items()
+                if int(sockets.get(int(key), 0) or 0) > 0}
+        if len(kept) != len(active_gems):
+            log_req(f"    ActiveGems: dropped {len(active_gems) - len(kept)} "
+                    "entries for unsocketable cards")
+        return kept
 
     def _resolve_gem_abilities(self, active_gems):
         """Bake a deck's socketed gems into per-instance ability lists at DECK
@@ -18776,6 +18794,8 @@ class HCPHandler(ProfileStreamMixin):
             cards_json = json.dumps(card_ids)
             # Persist an explicit empty map too; otherwise removing a gem can
             # leave the previous ActiveGems/gem_abilities pair on the deck.
+            active_gems = self._sanitize_active_gems(
+                self.user_profile["id"], active_gems)
             ag_json = json.dumps(active_gems)
             gem_abilities = self._resolve_gem_abilities(active_gems)
             ga_json = json.dumps(gem_abilities)
@@ -19057,6 +19077,7 @@ class HCPHandler(ProfileStreamMixin):
                 cards_json = json.dumps(card_ids) if card_ids is not None else None
                 # Keep the denormalized cache in lockstep with ActiveGems,
                 # including the empty-socket case.
+                active_gems = self._sanitize_active_gems(owner_id, active_gems)
                 ag_json = json.dumps(active_gems)
                 gem_abilities = self._resolve_gem_abilities(active_gems)
                 ga_json = json.dumps(gem_abilities)
@@ -19207,6 +19228,8 @@ class HCPHandler(ProfileStreamMixin):
                     ag_raw = db_deck.get("active_gems", "{}")
                     active_gems = json.loads(ag_raw) if ag_raw else {}
                 except: pass
+                active_gems = self._sanitize_active_gems(
+                    self.user_profile["id"], active_gems)
                 b.begin_list("ActiveGems", "System.Collections.Generic.Dictionary`2#System.UInt64!Game.Shared.Mechanics.EGemTypesNew", len(active_gems))
                 for gi, (k_str, v_val) in enumerate(active_gems.items()):
                     b.add_dict_entry_gem(gi, int(k_str), int(v_val))
