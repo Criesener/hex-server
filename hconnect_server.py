@@ -17803,6 +17803,12 @@ class HCPHandler(ProfileStreamMixin):
             self._player_starting_health = game.player_health
             self._ai_starting_health = game.ai_health
             log_req(f"    PreGame: player health {game.player_health}, AI health {game.ai_health}")
+            # AuthoritativeSessionBase.LoadPlayerDeck sends the deck's
+            # equipment slots for PvE/Arena/Siege; the battle HUD's equipment
+            # bar is populated only from this event.
+            if deck_equipment:
+                game.push_equipment_set(pl_uid_t, list(deck_equipment))
+                log_req(f"    EquipmentSet: {len(deck_equipment)} item(s)")
             game.push_turn_phase(game_engine.ETurnPhases.PreGame)
             if fra_mod_setup:
                 # A challenge can carry dialogue without one of the supported
