@@ -550,15 +550,28 @@ class ProfileStreamMixin:
         log_req(f">>> PUSH UserFlagsUpdated (dt=2201) "
                 f"{len(flags)} flags, dw_sz={len(dw)}")
 
-    def push_cards_to_client(self):
-        """Push card instances from DB to the client via CardsAdded event (2205), chunked."""
+    def push_cards_to_client(self, seed_only=False):
+        """Push card instances from DB to the client via CardsAdded event (2205), chunked.
+
+        The client marks every CardsAdded card as "New", so only instances it
+        has not seen this session (or whose template changed) are sent.
+        ``seed_only`` records the collection the login stream already
+        delivered without pushing anything.
+        """
         if not self.user_profile:
             return
         p = self.user_profile
         rows = db_profile_card_instances(p["id"], conn=_db)
         if not rows:
             return
-        all_cards = [(r[0], r[1], r[2], r[3], r[4], r[5], r[6]) for r in rows]
+        known = getattr(self, "_client_known_cards", None)
+        if known is None:
+            known = self._client_known_cards = {}
+        all_cards = [(r[0], r[1], r[2], r[3], r[4], r[5], r[6]) for r in rows
+                     if known.get(r[5]) != r[0]]
+        known.update((r[5], r[0]) for r in rows)
+        if seed_only or not all_cards:
+            return
 
         CHUNK = 500
         for start in range(0, len(all_cards), CHUNK):

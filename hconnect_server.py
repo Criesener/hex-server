@@ -12165,8 +12165,9 @@ class HCPHandler(ProfileStreamMixin):
                                 conn=_db)
                     _db.commit()
                     log_req(f">>> Pushed {len(purchased)} inventory items on first request")
-                    # Push existing cards (no "New" banner)
-                    self.push_cards_to_client()
+                    # The login stream already delivered the collection; a
+                    # CardsAdded push would mark every card "New".
+                    self.push_cards_to_client(seed_only=True)
 
             # On first routed message, push social data (friend list etc.)
             if getattr(self, '_social_pending', False) and self.user_profile:
