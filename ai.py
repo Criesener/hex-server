@@ -1908,8 +1908,10 @@ def ai_play_resource(handler, game, session, ai_t, battle_state):
     from rules_port.resources import resource_play_limit
     resource_limit = resource_play_limit(
         _db, session.session_id, battle_state, 0)
+    from rules_port.resources import resource_charge_grant
     resource_play = play_resource(
         battle_state, "ai", cur_grant, max_grant,
+        charge_amount=resource_charge_grant(_db, _ai_ags),
         additional_plays=max(0, resource_limit - 1))
     charge_delta = max(
         0, int(resource_play.charge.new_value) -

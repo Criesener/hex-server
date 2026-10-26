@@ -3009,7 +3009,10 @@ class HCPHandler(ProfileStreamMixin):
             log_req("    RulesPort transaction handler returned false: "
                     f"phase={getattr(port, 'current_turn_phase', None)} "
                     f"priority={getattr(getattr(port, 'action_stack', None), 'priority_player_id', None)} "
-                    f"action={type(getattr(getattr(port, 'action_stack', None), 'peek', lambda: None)()).__name__}")
+                    f"action={type(getattr(getattr(port, 'action_stack', None), 'peek', lambda: None)()).__name__} "
+                    f"command={type(command).__name__} "
+                    f"kind={getattr(payload, 'kind', getattr(command, 'kind', None))!r} "
+                    f"payload={str(getattr(payload, 'payload', payload))[:300]}")
         setattr(session, "_rules_port_dispatch_command", None)
         return bool(handled)
 
@@ -4504,8 +4507,10 @@ class HCPHandler(ProfileStreamMixin):
                 change = apply_resource_change(
                     bstate, "player", "threshold", amount, color=flag)
                 threshold_changes.append((flag, amount, change))
+        from rules_port.resources import resource_charge_grant
         resource_play = play_resource(
             bstate, "player", current_grant, max_grant,
+            charge_amount=resource_charge_grant(_db, ability_guids),
             additional_plays=max(0, resource_limit - 1))
         charge_delta = max(
             0, int(resource_play.charge.new_value) -

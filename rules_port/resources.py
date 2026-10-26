@@ -172,6 +172,38 @@ def resolve_printed_resource_abilities(game, session, db, handler, pl_t, ai_t,
     return logs
 
 
+def resource_charge_grant(db, ability_guids, default=1):
+    """Return the charges a resource grants from its printed abilities.
+
+    Shards carry "GainACharge" (amount 1); Crackling Vortex carries
+    "GainTwoCharges" (amount 2).  These ChargePoints modifiers are skipped by
+    resolve_printed_resource_abilities because the base resource play applies
+    them, so the play must use their authored amount.  Resources without such
+    a modifier keep ``default``.
+    """
+    from pvp_db import db_ability_effect_type_params
+    total, found = 0, False
+    for guid in ability_guids or ():
+        for effect_type, param in db_ability_effect_type_params(
+                str(guid).lower(), conn=db) or ():
+            if effect_type != "CardModifierAbilityEffectTemplate":
+                continue
+            try:
+                value = json.loads(param or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if str(value.get("property") or "").lower() != "chargepoints":
+                continue
+            try:
+                amount = int(value.get("amount") or 0)
+            except (TypeError, ValueError):
+                continue
+            if amount > 0:
+                total += amount
+                found = True
+    return total if found else default
+
+
 def _resource_grant_property(param):
     try:
         value = json.loads(param or "{}")
