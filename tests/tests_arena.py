@@ -267,6 +267,35 @@ def test_claim_arena_rewards_pays_100_gold_per_sack():
     assert pve_db.db_get_arena_state(user_id)["deck_id"] == 0
 
 
+def test_claim_arena_rewards_closes_a_run_without_rewards():
+    """Giving up (or claiming after three losses with no sacks) ends the run."""
+    import db
+    import pve_db
+
+    user_id = 9111
+    conn = db._db
+    conn.execute(
+        "INSERT OR REPLACE INTO users (id, name, gold, platinum) "
+        "VALUES (?, ?, ?, ?)", (user_id, "fra-giveup-test", 500, 0))
+    history = [{"result": "NONE"} for _ in range(20)]
+    for index in range(3):
+        history[index].update({"result": "LOSE", "fight_id": index + 1,
+                               "fight_tier": 1})
+    _seed_arena_reward_state(conn, user_id, 3, 3, history)
+    conn.commit()
+    challengers = [_arena_reward_challenger(index) for index in range(20)]
+
+    with mock.patch.object(pve_db, "db_get_fra_challengers",
+                           return_value=challengers):
+        result = pve_db.db_claim_arena_rewards(user_id)
+
+    assert result["success"] is True
+    assert result["gold"] == 0 and result["loot"] == []
+    assert pve_db.db_get_arena_state(user_id)["deck_id"] == 0
+    assert conn.execute(
+        "SELECT gold FROM users WHERE id=?", (user_id,)).fetchone()[0] == 500
+
+
 def test_destroy_arena_responds_and_clears_roster():
     """The client's post-cashout DestroyArenaData request is acknowledged."""
     import services.arena as arena_service
@@ -656,6 +685,7 @@ if __name__ == "__main__":
     test_mc_accept_persists_for_the_current_fight()
     test_cashout_sends_revealed_roster_before_response()
     test_claim_arena_rewards_pays_100_gold_per_sack()
+    test_claim_arena_rewards_closes_a_run_without_rewards()
     test_destroy_arena_responds_and_clears_roster()
     test_start_encounter_fra_flags_are_transient()
     test_elite_win_pairs_reward_with_that_tiers_boss_modification()

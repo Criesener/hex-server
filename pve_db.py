@@ -271,15 +271,18 @@ def db_claim_arena_rewards(user_id, conn=None):
         challengers = db_get_fra_challengers(user_id, conn=connection)
         history = db_get_arena_fight_history(user_id, conn=connection)
         sack_count = max(0, int(arena.get("gold_earned", 0) or 0))
-        if not int(arena.get("deck_id", 0) or 0) or not sack_count:
+        # The client sends the same request for "Claim Rewards" and for
+        # giving up a run without rewards, so an empty payout must still
+        # close the run.
+        if not int(arena.get("deck_id", 0) or 0):
             return {
                 "success": False, "error": 2,
-                "error_message": "There are no FRA rewards to claim.",
+                "error_message": "There is no FRA run to close.",
                 "gold": 0, "loot": [], "challengers": challengers,
                 "new_gold": None,
             }
 
-        loot = _fra_gold_rewards(history, sack_count)
+        loot = _fra_gold_rewards(history, sack_count) if sack_count else []
         gold = sum(int(item.get("gold", 0) or 0) for item in loot)
         new_gold, _new_platinum = db_adjust_user_currency(
             user_id, gold_delta=gold, conn=connection)
