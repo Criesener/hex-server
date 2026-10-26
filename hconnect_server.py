@@ -1124,6 +1124,15 @@ class HCPHandler(ProfileStreamMixin):
                 policy = _lifecycle.practice_phase_priority(
                     state, phase, active_player_id=active,
                     player_id=human)
+                # Stops only skip windows with an empty chain.  A trigger
+                # queued by Swiftstrike damage (e.g. Lightning Elemental's
+                # charge) must resolve in FirstStrikePriorityWindow before
+                # normal combat damage, so give both players priority.
+                from rules_port.kernel import TurnPhasePlayers
+                chain = getattr(_port, "chain", None)
+                if (policy == TurnPhasePlayers.NONE and chain is not None
+                        and not getattr(chain, "is_empty", True)):
+                    policy = TurnPhasePlayers.ALL
                 if os.environ.get("HEX_RULES_PORT_TRACE"):
                     log_req(
                         f"[rules-trace] phase-policy phase={phase!r} "
