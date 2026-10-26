@@ -383,7 +383,10 @@ def apply_attribute_grant(game, session, db, handler, pl_t, ai_t, target_uid,
         owner_id = db_card_owner_id(session.session_id, target_uid, conn=db)
         owner = owner_uid(owner_id if owner_id is not None else 0,
                           pl_t, ai_t, bstate)
+        from pvp_db import db_card_state_value
+        state = db_card_state_value(session.session_id, target_uid, conn=db)
         game.push_card_updated(scid, owner, card_collection_for_location(trow[2]), ct,
+                               state=int(state or 0),
                                template_id=trow[0], attack=atk, defense=def_,
                                attributes=cur | bits, nulling=(trow[2] == "deck"))
     _log(f"    Attribute grant {hex(target_uid)}: +{bits:b}")

@@ -200,7 +200,8 @@ def apply_attribute_grant(context, target, param):
         return 0
     from pvp_db import (db_card_attribute_value, db_set_card_attribute_value,
                         db_card_owner_id, db_card_source_info,
-                        db_card_mutation_field, db_set_card_mutation_field)
+                        db_card_mutation_field, db_set_card_mutation_field,
+                        db_card_state_value)
     uid = int(target)
     temporary = str(param.get("duration") or "") in {
         "EndOfTurn", "BeginningOfOwnersTurn", "AfterCardsReadyOnPlayersTurn"}
@@ -283,11 +284,16 @@ def apply_attribute_grant(context, target, param):
                 except (TypeError, ValueError):
                     continue
         owner = db_card_owner_id(context.session.session_id, uid, conn=context.db)
+        # Without the persisted state the update defaults to None_ and the
+        # client briefly readies tapped/attacking troops.
+        state = db_card_state_value(
+            context.session.session_id, uid, conn=context.db)
         from .runtime_helpers import card_collection_for_location, owner_uid
         context.game.push_card_updated(
             scid, owner_uid(owner or 0, context.player_uid, context.ai_uid,
                             context.bstate),
             card_collection_for_location(row[2]), card_type,
+            state=int(state or 0),
             template_id=row[0], attack=attack, defense=defense, cost=cost,
             gems=gems, attributes=projected_attributes,
             int_attrs=projected_int_attrs,

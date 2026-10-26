@@ -641,6 +641,38 @@ def test_temporary_attribute_grant(db):
     assert attrs & game_engine.ECardAttributes.SpiritDrain
 
 
+def test_attribute_grant_keeps_card_state(db):
+    """A static aura re-granting an attribute (e.g. "Wild troops have Crush")
+    must project the card's persisted state; a CardUpdated without it makes
+    the client briefly ready exhausted attackers."""
+    from abilities.framework._shared import apply_attribute_grant
+
+    class H:
+        user_profile = {"id": 5}
+
+        def _card_full_data(self, game, scid, tpl, inst=None):
+            return (tpl, "Troop", "Card", 1, 1, 1, 0)
+
+    class S:
+        session_id = 1
+
+    pl_t = game_engine.UID.make(244, 5)
+    ai_t = game_engine.UID.make(3, 1000)
+    game = game_engine.Game(1, pl_t, ai_t)
+    card(db, 101, 5, TPL_PLAIN, "warzone")
+    tapped = (game_engine.ECardStates.Tapped |
+              game_engine.ECardStates.Attacking |
+              game_engine.ECardStates.HasAttacked)
+    db.execute("UPDATE game_cards SET card_state=? WHERE card_uid=101",
+               (int(tapped),))
+    db.commit()
+    apply_attribute_grant(game, S(), db, H(), pl_t, ai_t, 101,
+                          "<b>Lifedrain</b>")
+    updates = [ev for ev in game.events
+               if type(ev).__name__ == "CardUpdatedSessionEventArgs"]
+    assert updates and updates[-1].state == tapped, updates
+
+
 def test_end_of_turn_clear_removes_temp_attrs(db):
     """The EndTurn clear (temporary_attributes = 0) drops 'this turn'
     attribute grants from effective stats — Dimmid's Lifedrain must not
@@ -934,6 +966,7 @@ if __name__ == "__main__":
     run("Damage maps champion targets", test_champion_damage)
     run("Resource properties hit both champions", test_resource_properties)
     run("This-turn attribute grants are temporary", test_temporary_attribute_grant)
+    run("Attribute grants keep the card's tapped state", test_attribute_grant_keeps_card_state)
     run("End-of-turn clear drops this-turn attributes", test_end_of_turn_clear_removes_temp_attrs)
     run("End-of-turn cleanup clears damage before buffs",
         test_end_of_turn_cleanup_clears_damage_before_buffs)
