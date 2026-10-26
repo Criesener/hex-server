@@ -2224,6 +2224,21 @@ def db_empty_socket_gems(template_guid, conn=None):
     return (EMPTY_SOCKET_GEMS if row and int(row[0] or 0) > 0 else 0)
 
 
+def db_template_socket_count(template_guid, conn=None):
+    """Return a card template's gem socket count (0 when unsocketable)."""
+    connection = conn or _db_layer._db
+    try:
+        row = _cached_static_row(
+            connection, ("card_socket_count", str(template_guid).lower()),
+            "SELECT socket_count FROM card_templates WHERE guid=?",
+            (str(template_guid).lower(),))
+    except sqlite3.OperationalError as exc:
+        if "no such column" not in str(exc).lower():
+            raise
+        return 0
+    return int(row[0] or 0) if row else 0
+
+
 def db_first_template_guid(conn=None):
     """Return a deterministic catalog fallback template, if available."""
     connection = conn or _db_layer._db

@@ -4007,7 +4007,15 @@ class HCPHandler(ProfileStreamMixin):
                 if active_gems_json:
                     try:
                         gems = json.loads(active_gems_json)
-                        gem_type = int(gems.get(str(instance_id), 0) or 0)
+                        # Only an owned card instance can sit in the player's
+                        # deck sockets.  AI/encounter cards reference their
+                        # template GUID; a miss here must keep the gem
+                        # persisted on the game card (an AI Blamsmith lost
+                        # its Wild gem on every update).
+                        deck_gem = (gems.get(str(int(instance_id)))
+                                    if str(instance_id).isdigit() else None)
+                        if deck_gem is not None:
+                            gem_type = int(deck_gem or 0)
                     except Exception:
                         pass
             except sqlite3.OperationalError as exc:
@@ -17376,12 +17384,20 @@ class HCPHandler(ProfileStreamMixin):
                                             else [])
                             if not isinstance(socket_names, list):
                                 socket_names = [socket_names]
+                            # Encounter decks list gems for every copy, also
+                            # for cards without sockets; only socketed slots
+                            # exist (a gem on Power and Pain added a Diamond
+                            # ability it cannot have).
+                            from pvp_db import db_template_socket_count
+                            socket_names = socket_names[
+                                :db_template_socket_count(cg, conn=_db)]
+                            gem_slot = 0
                             for socket_name in socket_names:
                                 gem_data = gem_types_by_name.get(str(socket_name))
                                 if not gem_data:
                                     continue
-                                if not gem_type:
-                                    gem_type = gem_data[0]
+                                gem_type |= int(gem_data[0]) << (10 * gem_slot)
+                                gem_slot += 1
                                 for gem_guid in gem_data[1] or []:
                                     gem_guid = str(gem_guid).lower()
                                     if gem_guid not in gem_ability_guids:

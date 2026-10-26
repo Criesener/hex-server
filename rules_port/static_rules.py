@@ -89,6 +89,14 @@ def _projection_cache():
         _projection_local.cache = None
 
 
+def _is_scrounge_ability(ability_guid):
+    from gamedata import DEFAULT_RECORD_STORE, ability_graph
+    from abilities.framework.tac import tac_int
+    graph = ability_graph(DEFAULT_RECORD_STORE, ability_guid)
+    return bool(graph is not None and
+                tac_int(graph.serialized_tac, "Scrounge", 0))
+
+
 def _static_abilities(db, session_id, card_uid, cache=None):
     """Return the continuous abilities authored on one materialized card."""
     from pvp_db import db_card_ability_payload, db_ability_static_metadata
@@ -109,6 +117,12 @@ def _static_abilities(db, session_id, card_uid, cache=None):
         if not metadata:
             continue
         if not metadata[0] and not metadata[1]:
+            # A Scrounge ability has no trigger either, but it applies only
+            # when its void cost was paid on play (the play resolver writes
+            # its modifiers then); it is not a continuous ability.  Counting
+            # it made Blamsmith an 11/11 without voiding anything.
+            if _is_scrounge_ability(guid):
+                continue
             result.append(guid)
             continue
         raw = str(metadata[2] or "")
@@ -1525,6 +1539,8 @@ def _has_continuous_static(db, session_id, card_uid):
         if not metadata:
             continue
         if not metadata[0] and not metadata[1]:
+            if _is_scrounge_ability(str(guid).lower()):
+                continue
             return True
         # Only the authored all-zone CardCreatedEvent convention is
         # continuous.  Triggered abilities with broad collection flags (for
