@@ -8101,8 +8101,29 @@ class HCPHandler(ProfileStreamMixin):
         _be = self._checkpoint_engine(session)
         bstate = _be.load_state(session)
         self._current_bstate = bstate
+        pending_keys = ("pending_choice", "pending_trigger",
+                        "pending_deck_search", "pending_conversation",
+                        "pending_discard_ability")
+
+        def pending_input():
+            return [key for key in pending_keys if bstate.get(key)]
+
+        # An open prompt (e.g. Veteran Gladiator's "when this attacks, target
+        # opposing troop can't block") owns the client's PlayerOptionList; a
+        # fresh attack option list would replace it and strand the picker.
+        if pending_input():
+            log_req("    Attack options held for pending client input: "
+                    + ",".join(pending_input()))
+            return
         game = self._fresh_game(session, pl_t, ai_t, bstate)
         self._auto_declare_force_attackers(session, pl_t, ai_t, bstate, game)
+        if pending_input():
+            _be.save_state(session, bstate)
+            # The forced declaration and the prompt are buffered in ``game``.
+            self._send_battle_events(session, game, pl_t)
+            log_req("    Attack options held after forced attack prompt: "
+                    + ",".join(pending_input()))
+            return
         rows = db_warzone_troops_basic(session.session_id, self.user_profile["id"])
         from rules_port.static_rules import effective_attributes
         ready = []

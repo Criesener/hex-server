@@ -34,6 +34,14 @@ def _trace_event(ev):
                                         ("CameOut", 8192))
                  if state & bit]
         parts.append(f"state={state:#x}[{','.join(flags)}]")
+    card_id = getattr(ev, "card_id", None)
+    if card_id is not None and getattr(card_id, "guid", None):
+        parts.append(f"tpl={str(card_id.guid)[:8]}")
+    for attr in ("cost", "gems"):
+        value = getattr(ev, attr, None)
+        if isinstance(value, int) and value:
+            parts.append(f"{attr}={value:#x}" if attr == "gems"
+                         else f"{attr}={value}")
     for attr in ("collection", "phase", "turn_phase", "player_id"):
         if hasattr(ev, attr):
             parts.append(f"{attr}={getattr(ev, attr)}")
