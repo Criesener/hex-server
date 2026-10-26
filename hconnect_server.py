@@ -882,6 +882,9 @@ class HCPHandler(ProfileStreamMixin):
         self.conn = conn
         self.addr = addr
         self._send_lock = threading.Lock()
+        # Serializes this connection's message handling with deferred work
+        # (e.g. the AI's delayed coin-toss pick) that runs on timer threads.
+        self._message_lock = threading.RLock()
         self.buf = b""
         self.sid = None
         self.scnt = 0
@@ -11950,7 +11953,8 @@ class HCPHandler(ProfileStreamMixin):
                     except ValueError:
                         break
                     self.buf = self.buf[consumed:]
-                    self.handle_message(headers, body)
+                    with self._message_lock:
+                        self.handle_message(headers, body)
         except ConnectionResetError:
             log(f"Connection reset {self.addr}")
         except Exception as e:
@@ -17797,7 +17801,33 @@ class HCPHandler(ProfileStreamMixin):
                     ai_choice=True)
                 log_req("    FRA AI won coin toss: chose %s first (90/10)" %
                         ("Play" if ai_plays_first else "Draw"))
-                self._handle_choose_pick_transaction(session, ai_pick)
+                # The client resumes session events as soon as the coin
+                # starts to hide, so an immediate pick puts the mulligan
+                # dialog on top of the coin-toss animation.  Resolve it once
+                # the animation has played, like a human opponent's pick.
+                try:
+                    delay = float(os.environ.get(
+                        "HEX_AI_COIN_PICK_DELAY", "7") or 0)
+                except ValueError:
+                    delay = 7.0
+                if delay > 0:
+                    def _resolve_ai_pick(session=session, ai_pick=ai_pick):
+                        with self._message_lock:
+                            if getattr(self, "_disconnect_handled", False):
+                                return
+                            try:
+                                self._handle_choose_pick_transaction(
+                                    session, ai_pick)
+                            except Exception as e:
+                                import traceback
+                                log_req(f"    Deferred AI coin pick failed: "
+                                        f"{e}\n{traceback.format_exc()}")
+                    timer = threading.Timer(delay, _resolve_ai_pick)
+                    timer.daemon = True
+                    timer.start()
+                    log_req(f"    AI coin pick deferred {delay:g}s")
+                else:
+                    self._handle_choose_pick_transaction(session, ai_pick)
 
         # ServiceCampaign Siege (150000)
         elif data_type == 150000:
