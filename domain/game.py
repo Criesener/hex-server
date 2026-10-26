@@ -13,6 +13,37 @@ from domain.events import *
 event_logger = None
 from domain.constants import PLAY_CARD_ABILITY_TEMPLATE_ID
 
+import os as _os
+import sys as _sys
+import time as _time
+
+# HEX_TRACE_EVENTS=1 logs every queued session event (with card state and the
+# server call site) to stdout, to diagnose client-side display glitches.
+_TRACE_EVENTS = bool(_os.environ.get("HEX_TRACE_EVENTS"))
+
+
+def _trace_event(ev):
+    parts = [type(ev).__name__.replace("SessionEventArgs", "")]
+    cid = getattr(ev, "session_card_id", None)
+    if cid is not None:
+        parts.append(f"card={cid}")
+    if hasattr(ev, "state") and isinstance(getattr(ev, "state"), int):
+        state = ev.state
+        flags = [name for name, bit in (("Tapped", 1), ("Attacking", 4),
+                                        ("HasAttacked", 128), ("Blocking", 8),
+                                        ("CameOut", 8192))
+                 if state & bit]
+        parts.append(f"state={state:#x}[{','.join(flags)}]")
+    for attr in ("collection", "phase", "turn_phase", "player_id"):
+        if hasattr(ev, attr):
+            parts.append(f"{attr}={getattr(ev, attr)}")
+    frames, f = [], _sys._getframe(2)
+    while f is not None and len(frames) < 3:
+        frames.append(f"{f.f_code.co_name}:{f.f_lineno}")
+        f = f.f_back
+    print(f"[{_time.strftime('%H:%M:%S')}]     TRACE {' '.join(parts)} "
+          f"<- {' < '.join(frames)}", flush=True)
+
 
 _SECRET_COUNTER_CACHE = {}
 
@@ -258,6 +289,8 @@ class Game:
         return ev
 
     def _push(self, ev: SessionEventArgs):
+        if _TRACE_EVENTS:
+            _trace_event(ev)
         self.events.append(ev)
 
     def push_champion_health_changed_if_missing(self, player_uid: UID,
