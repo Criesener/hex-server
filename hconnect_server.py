@@ -4588,9 +4588,13 @@ class HCPHandler(ProfileStreamMixin):
                 not bstate.get("pending_conversation") and
                 _be.stack_empty(bstate)):
             self._push_main_phase_options(session, pl_t, ai_t)
-        elif _be.stack_empty(bstate):
+        elif (_be.stack_empty(bstate) or bstate.get("pending_choice") or
+              bstate.get("pending_deck_search") or
+              bstate.get("pending_conversation")):
             # The resource event packet already carried the picker/continuation;
-            # do not overwrite it with ordinary main-phase options.
+            # do not overwrite it with ordinary main-phase options.  A
+            # threshold/charge trigger (e.g. Arena Regular) may already be on
+            # the chain; it gets its priority window once the choice resolves.
             log_req("    RulesPort resource waiting for continuation")
         else:
             # A threshold/charge trigger placed an item on the chain.  Expose
@@ -6311,6 +6315,16 @@ class HCPHandler(ProfileStreamMixin):
             # The resumed BOM has opened its second choice. The prompt helper
             # already supplied the new PlayerOptionList and green light.
             self._send_battle_events(session, g, pl_t)
+        elif not _be.stack_empty(bstate):
+            # A trigger queued while the choice was open (e.g. Arena Regular
+            # on a resource's charge) still waits on the chain: open its
+            # response window instead of announcing an empty chain.
+            self._send_battle_events(session, g, pl_t)
+            self._push_phase_options_empty(session, pl_t, ai_t)
+            chain_game = self._fresh_game(session, pl_t, ai_t, bstate)
+            chain_game.push_green_light(
+                pl_t, game_engine.EPriorityContext.ResolveTopOfChain)
+            self._send_battle_events(session, chain_game, pl_t)
         else:
             g.push_chain_empty()
             g.push_green_light(pl_t, game_engine.EPriorityContext.Normal)
