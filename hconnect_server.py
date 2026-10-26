@@ -3508,6 +3508,11 @@ class HCPHandler(ProfileStreamMixin):
                                              if self.user_profile else 0)
             if play_plan is None:
                 continue
+            # One OptionInstance per ability: the client reads every target
+            # slot's min/max count and targets for an ability from a single
+            # instance (Boulder Toss: "target troop you control ... to another
+            # target champion or troop" has two slots).
+            ability_instances = {}
             for ag, idx, tid, targets in self._play_ability_targets(
                     session, play_plan,
                     battle_state=getattr(self, "_current_bstate", None)):
@@ -3522,8 +3527,13 @@ class HCPHandler(ProfileStreamMixin):
                     min_count = max(0, target.minimum)
                     max_count = max(min_count, target.maximum or min_count or 1)
                     break
-                inst = game._make_event(game_engine.OptionInstanceSessionEventArgs)
-                inst.opt_id = game_engine.ResourceId.from_str(ag)
+                inst = ability_instances.get(ag)
+                if inst is None:
+                    inst = game._make_event(
+                        game_engine.OptionInstanceSessionEventArgs)
+                    inst.opt_id = game_engine.ResourceId.from_str(ag)
+                    opt.instances.append(inst)
+                    ability_instances[ag] = inst
                 inst.min_target_counts.append(min_count)
                 inst.max_target_counts.append(max_count)
                 inst.target_ids.append(game_engine.ResourceId.from_str(tid))
@@ -3532,7 +3542,6 @@ class HCPHandler(ProfileStreamMixin):
                 tgt.target_id = game_engine.ResourceId.from_str(tid)
                 tgt.targets = list(targets)
                 inst.target_instances.append(tgt)
-                opt.instances.append(inst)
                 # Also attach the picker to the PlayCard option itself so the
                 # client's CanUseAbility finds the target whether it checks the
                 # card's ability or the built-in PlayCard ability (the play-card
