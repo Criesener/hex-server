@@ -19263,8 +19263,13 @@ class HCPHandler(ProfileStreamMixin):
         # successful RemoveDeckResponse.
         elif data_type == 2093:
             from profile_db import db_delete_deck
-            match = re.search(r"(\d+)", str(inner_obj.get("DeckID", "")))
-            deck_uid64 = int(match.group(1)) if match else 0
+            raw_deck_id = inner_obj.get("DeckID", "")
+            if isinstance(raw_deck_id, dict):
+                raw_deck_id = raw_deck_id.get("m_UID64", 0)
+            match = re.search(r"m_UID64\D*(\d+)|^\s*(\d+)\s*$",
+                              str(raw_deck_id))
+            deck_uid64 = (int(match.group(1) or match.group(2))
+                          if match else 0)
             deck_id = deck_uid64 >> 8
             removed = bool(deck_id and self.user_profile and db_delete_deck(
                 deck_id, self.user_profile["id"], conn=_db))
@@ -19273,9 +19278,15 @@ class HCPHandler(ProfileStreamMixin):
                     f"removed={removed}")
             resp_inner = encode_objfmt_response(
                 ["Game.Client.Network.Profile.RemoveDeckResponse",
-                 "Game.Shared.UID", "System.UInt64", "System.Boolean"],
+                 "Game.Shared.UID", "System.UInt64", "System.Boolean",
+                 "Game.Shared.Network.Profile.ERemoveDeckError",
+                 "System.Int32", "System.String"],
                 [("DeckID", "uid", deck_uid64),
-                 ("succeded", "bool", removed)])
+                 ("succeded", "bool", removed),
+                 ("Error", "enum1", (
+                     "Game.Shared.Network.Profile.ERemoveDeckError", 0)),
+                 ("ErrorMessage", "string",
+                  "" if removed else "Deck not found.")])
             resp_body = compress_gzip(resp_inner) if comp else resp_inner
             resp_reqid = reqid | 1
             dw_bytes = encode_datawrapper(resp_reqid, data_type, resp_body, comp, session_id)
