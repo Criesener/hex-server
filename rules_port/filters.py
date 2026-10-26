@@ -1767,12 +1767,28 @@ class IntAttrFilter:
             if event_tac is None:
                 event_state = getattr(effect, "bstate", {}) or {}
                 event_tac = event_state.get("event_tac")
+            if event_tac is None:
+                # A queued trigger keeps its event payload in the battle
+                # state while it resolves (Brutal Commander's "cost equal to
+                # or less than the damage dealt" deck search).
+                trigger_data = getattr(effect, "resolving_trigger_event_data",
+                                       None)
+                if not isinstance(trigger_data, dict):
+                    trigger_data = (getattr(effect, "bstate", {}) or {}).get(
+                        "resolving_trigger_event_data")
+                if isinstance(trigger_data, dict):
+                    event_tac = trigger_data.get("event_tac")
             if isinstance(event_tac, dict) and parts:
                 from .tac import _tac_attr_hash
                 attribute_hash = _tac_attr_hash(parts[0])
                 value = event_tac.get(attribute_hash)
                 if value is None:
                     value = event_tac.get(str(attribute_hash))
+                if value is None:
+                    # Host-emitted events name their TAC attributes.
+                    wanted = parts[0].lower()
+                    value = next((v for k, v in event_tac.items()
+                                  if str(k).lower() == wanted), None)
                 if value is not None:
                     try:
                         rhs = (int(_v(card, "resource_cost", "cost", default=0)

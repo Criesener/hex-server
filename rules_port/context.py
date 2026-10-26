@@ -3940,6 +3940,12 @@ class EffectContext:
                     if candidates:
                         choice_target = (
                             index, [int(uid) for uid in candidates], from_deck)
+                    elif from_deck:
+                        # "Search your deck for ..." with no legal card does
+                        # nothing; resolving the child anyway let its move
+                        # fall back to the ability source (Brutal Commander
+                        # returned itself to hand).
+                        return "activate ability: no legal deck target"
                     break
             if choice_target is not None and int(owner_id or 0) != 0:
                 target_index, choice_uids, from_deck = choice_target

@@ -1270,7 +1270,11 @@ class PortAbilityResolver:
             try:
                 self.event_tac[int(key)] = value
             except (TypeError, ValueError):
-                continue
+                # Host-emitted events name their attributes ("DamageDealt");
+                # Records filters look them up by attribute hash.
+                if isinstance(key, str) and key:
+                    from .tac import _tac_attr_hash
+                    self.event_tac[_tac_attr_hash(key)] = value
         self.effect_backend = NativeEffectBackend()
         if native_effect is None:
             from .effects import dispatch
@@ -1774,10 +1778,13 @@ def resolve_port_trigger(handler, game, session, db, player_uid, ai_uid,
     battle_state["resolving_trigger_event_data"] = (
         dict(event_data) if isinstance(event_data, dict) else {})
     try:
+        trigger_tac = (event_data.get("event_tac")
+                       if isinstance(event_data, dict) else None)
         state = resolve_port_ability(
             handler, game, session, db, player_uid, ai_uid, battle_state,
             guid, source_uid, owner_id, target_map=target_map,
-            instance_id=int(item.get("instance_id", 1)))
+            instance_id=int(item.get("instance_id", 1)),
+            event_tac=trigger_tac if isinstance(trigger_tac, dict) else None)
         if not battle_state.get("resolution_paused"):
             # A queued trigger resolves here (mulligan/setup drains, the port's
             # chain resolver, and the PvP projections).  Consume an authored
