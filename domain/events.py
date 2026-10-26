@@ -6,7 +6,7 @@ from domain.types import UID, ResourceId, SessionCardId, CombatId
 from domain.enums import (
     ETurnPhases, ECardTypes, ECardCollections, ECardLocations, ECardStates,
     EAICardStates, ECardAttributes, ECardShards, EGemTypesNew, ECombatPhase,
-    EPriorityContext, ECardUsage, ECardShard,
+    EPriorityContext, ECardUsage, ECardShard, client_gem_value,
 )
 from domain.serializer import Serializer
 
@@ -907,7 +907,7 @@ class CardUpdatedSessionEventArgs(SessionEventArgs):
         s.add_dict_str_int(self.int_attrs)
         s.add_list_resource_id(self.counter_templates)
         s.add_list_int(self.counter_counts)
-        s.add_enum_ulong(self.gems)
+        s.add_enum_ulong(client_gem_value(self.gems))
         s.add_list_int(self.threshold_list)
         s.add_bool(self.nulling)
         s.add_list_scid(self.related_cards)
@@ -1385,7 +1385,7 @@ class CardTransformedSessionEventArgs(SessionEventArgs):
         self.ser.add_scid(self.session_card_id)
         self.ser.add_resource_id(self.card_template_id)
         self.ser.add_bool(self.is_replica)
-        self.ser.add_enum_ulong(self.gems)
+        self.ser.add_enum_ulong(client_gem_value(self.gems))
         return self.end_write()
 
 

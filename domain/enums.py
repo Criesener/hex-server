@@ -273,6 +273,24 @@ class EGemTypesNew:
     Basic = 1
 
 
+def client_gem_value(value):
+    """Return a socket value in the client's "new gem format".
+
+    GemHelper.IsNewGemFormat requires bit 62 (EGemTypesNew.Unknown); without
+    it the client ignores the socketed gems.  Gem types sit in 10-bit slots
+    (Gem1..Gem6), so older stored values (a single gem type, or slots saved
+    without the flag) only need the flag added.
+    """
+    return int(value or 0) | EGemTypesNew.Unknown
+
+
+def gem_types_in(value):
+    """Split a socket value into its gem types (one per filled 10-bit slot)."""
+    value = int(value or 0) & ~EGemTypesNew.Unknown
+    return [gem for gem in ((value >> (10 * slot)) & 0x3FF
+                            for slot in range(6)) if gem]
+
+
 # ======================================================================
 #  Combat / Priority
 # ======================================================================

@@ -2776,14 +2776,10 @@ def db_card_gem_ability_guids(session_id, card_uid, conn=None):
         return []
     if not raw:
         return []
-    values = []
-    if raw & (1 << 62):
-        for slot in range(6):
-            value = (raw >> (slot * 10)) & 0x3FF
-            if value:
-                values.append(value)
-    else:
-        values = [raw]
+    # Values saved before the format flag was preserved still pack one gem
+    # type per 10-bit slot, so split with or without the flag.
+    from domain.enums import gem_types_in
+    values = gem_types_in(raw)
     guids = []
     for value in dict.fromkeys(values):
         payload = db_gem_abilities(value, conn=conn)

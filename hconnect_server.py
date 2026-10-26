@@ -3918,22 +3918,25 @@ class HCPHandler(ProfileStreamMixin):
         zones".  The game later copies these onto game_cards.card_abilities so
         the card is updated with the gem's ability."""
         import json as _j
+        from domain.enums import gem_types_in
         out = {}
         for inst, gem in (active_gems or {}).items():
             try:
-                gem = int(gem)
+                gem_types = gem_types_in(gem)
             except (TypeError, ValueError):
                 continue
-            if gem <= 0:
-                continue
-            gem_abilities_json = db_gem_abilities(gem, conn=_db)
-            if gem_abilities_json:
+            # A multi-socket card packs one gem type per 10-bit slot.
+            abilities = []
+            for gem_type in gem_types:
+                gem_abilities_json = db_gem_abilities(gem_type, conn=_db)
+                if not gem_abilities_json:
+                    continue
                 try:
-                    abilities = _j.loads(gem_abilities_json)
+                    abilities.extend(_j.loads(gem_abilities_json))
                 except Exception:
-                    abilities = []
-                if abilities:
-                    out[str(inst)] = [str(a).lower() for a in abilities]
+                    continue
+            if abilities:
+                out[str(inst)] = [str(a).lower() for a in abilities]
         return out
 
     def _card_gem_type(self, game, scid, instance_id=None,
@@ -10778,12 +10781,15 @@ class HCPHandler(ProfileStreamMixin):
         gem_type = HCPHandler._card_gem_type(
             self, game, scid, gem_instance_id, persisted_gem=persisted_gem)
         if gem_type:
-            try:
-                gem_abilities_json = db_gem_abilities(gem_type, conn=_db)
-                gem_guids = (json.loads(gem_abilities_json)
-                             if gem_abilities_json else [])
-            except Exception:
-                gem_guids = []
+            from domain.enums import gem_types_in
+            gem_guids = []
+            for socketed in gem_types_in(gem_type):
+                try:
+                    gem_abilities_json = db_gem_abilities(socketed, conn=_db)
+                    gem_guids.extend(json.loads(gem_abilities_json)
+                                     if gem_abilities_json else [])
+                except Exception:
+                    continue
             for gem_guid in gem_guids:
                 gem_guid = str(gem_guid).lower()
                 if gem_guid not in ability_guids:
@@ -18798,7 +18804,7 @@ class HCPHandler(ProfileStreamMixin):
                                 seg = tail.split(b';', 18)
                                 if len(seg) >= 18:
                                     key_val = struct.unpack("<Q", unhexlify(seg[8]))[0]
-                                    v_val = struct.unpack("<Q", unhexlify(seg[17]))[0] & 0xFFFFFFFF
+                                    v_val = struct.unpack("<Q", unhexlify(seg[17]))[0]
                                     active_gems[str(key_val)] = v_val
                                     tail = b';'.join(seg[18:])
                         except: pass
@@ -19080,7 +19086,7 @@ class HCPHandler(ProfileStreamMixin):
                                 seg = tail.split(b';', 18)
                                 if len(seg) >= 18:
                                     key_val = struct.unpack("<Q", unhexlify(seg[8]))[0]
-                                    v_val = struct.unpack("<Q", unhexlify(seg[17]))[0] & 0xFFFFFFFF
+                                    v_val = struct.unpack("<Q", unhexlify(seg[17]))[0]
                                     active_gems[str(key_val)] = v_val
                                     tail = b';'.join(seg[18:])
                         except: pass
@@ -19274,9 +19280,11 @@ class HCPHandler(ProfileStreamMixin):
                 except: pass
                 active_gems = self._sanitize_active_gems(
                     self.user_profile["id"], active_gems)
+                from domain.enums import client_gem_value
                 b.begin_list("ActiveGems", "System.Collections.Generic.Dictionary`2#System.UInt64!Game.Shared.Mechanics.EGemTypesNew", len(active_gems))
                 for gi, (k_str, v_val) in enumerate(active_gems.items()):
-                    b.add_dict_entry_gem(gi, int(k_str), int(v_val))
+                    b.add_dict_entry_gem(gi, int(k_str),
+                                         client_gem_value(v_val))
                 b.field_enum("Persona", "Game.Shared.Mechanics.EDeckPersonality", 0)
                 b.field_enum("Error", "Game.Shared.Network.Profile.EGetDeckInfoError", 0)
                 b.field_str("ErrorMessage", "")
