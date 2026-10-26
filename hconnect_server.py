@@ -3924,9 +3924,21 @@ class HCPHandler(ProfileStreamMixin):
         """
         if not active_gems or not user_id:
             return active_gems or {}
+        from domain.enums import client_gem_value, gem_types_in
         sockets = db_card_instance_socket_counts(user_id, conn=_db)
-        kept = {key: value for key, value in active_gems.items()
-                if int(sockets.get(int(key), 0) or 0) > 0}
+        kept = {}
+        for key, value in active_gems.items():
+            socket_count = int(sockets.get(int(key), 0) or 0)
+            if socket_count <= 0:
+                continue
+            # A value saved without the format flag was read by the client as
+            # old-format bit flags (9226 -> four gems) and saved back with
+            # more gems than the card has sockets; keep the socketed slots.
+            gem_types = gem_types_in(value)[:socket_count]
+            packed = 0
+            for slot, gem_type in enumerate(gem_types):
+                packed |= int(gem_type) << (10 * slot)
+            kept[key] = client_gem_value(packed) if gem_types else 0
         if len(kept) != len(active_gems):
             log_req(f"    ActiveGems: dropped {len(active_gems) - len(kept)} "
                     "entries for unsocketable cards")
