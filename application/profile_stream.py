@@ -1,5 +1,6 @@
 """Profile/reward output projection mixin for HConnect connections."""
 
+import os as _os
 from typing import TYPE_CHECKING, Any
 
 from profile_db import db_get_unopened_chests
@@ -176,12 +177,13 @@ class ProfileStreamMixin:
                 # the client's GetDeck(ulong) wraps it in new UID(Deck, id)
                 # (=(id<<8)|17) before looking up its DeckList, which is keyed
                 # by (db_id<<8)|17. Sending the encoded UID shifts it twice.
-                # We deliberately push LastDeckID=0: the Globe champion select
-                # (UIGlobeArenaPanelViewModel.SelectDeck) LAUNCHES the campaign
-                # when LastDeckID is set+valid, else it opens the deck editor —
-                # pushing 0 lets the player edit their champion deck from the
-                # Champion Select / Globe screen. The DB value is kept for
-                # battle deck selection (updated when they pick a deck).
+                # The Globe champion select (UIGlobeArenaPanelViewModel.
+                # SelectDeck) launches the campaign when LastDeckID is set and
+                # valid, else it opens the deck editor — like the original
+                # game. HEX_CHAMPION_DECK_EDITOR=1 restores the old behavior
+                # of always opening the editor (LastDeckID=0).
+                last_deck_id = 0 if _os.environ.get(
+                    "HEX_CHAMPION_DECK_EDITOR") else (c[7] or 0)
                 try:
                     champion_talents = _json.loads(c[9] or "[]")
                     if not isinstance(champion_talents, list):
@@ -189,7 +191,8 @@ class ProfileStreamMixin:
                 except (TypeError, ValueError):
                     champion_talents = []
                 champ_data.append((champ_uid64, c[1], champ_id, c[5], c[6], c[3], c[2], c[4],
-                                   c[8] or 0, 0, champion_talents, c[10] or ""))
+                                   c[8] or 0, last_deck_id, champion_talents,
+                                   c[10] or ""))
         champ_count = len(champ_data)
         log(f">>> Profile push: {champ_count} champions from DB")
 
