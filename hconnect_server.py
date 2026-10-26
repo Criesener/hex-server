@@ -7003,6 +7003,15 @@ class HCPHandler(ProfileStreamMixin):
                 state.pop("ai_turn_phase_idx", None)
                 _be.save_state(session, state)
                 log_req(f"    Discard answered — resuming AI turn at idx {ai_idx}")
+                # A Deathcry that died in combat (Bloatcap blocked and killed
+                # in the Swiftstrike step) paused the native scheduler inside
+                # a damage phase.  The phase-loop AI driver cannot enter that
+                # phase ("phase 16 was not entered by RulesPort") and the game
+                # stalled; let RulesPort finish the step and re-project.
+                if (getattr(session, "_rules_port_session", None) is not None
+                        and self._advance_rules_port_to_priority(
+                            session, pl_t, ai_t, state)):
+                    return True
                 self._run_ai_turn(session, pl_t, ai_t, state,
                                   start_idx=int(ai_idx))
                 return True
