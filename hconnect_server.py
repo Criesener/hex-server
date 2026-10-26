@@ -19259,6 +19259,31 @@ class HCPHandler(ProfileStreamMixin):
                 "reqid": resp_reqid, "c": comp, "conh": conh, "sid": self.sid}, dw_bytes)
             log_req(f"    Sent UpdateDeck response (deck={deck_id}, {len(dw_bytes)}b)")
 
+        # RemoveDeck (2093): the client keeps the deck until it receives a
+        # successful RemoveDeckResponse.
+        elif data_type == 2093:
+            from profile_db import db_delete_deck
+            match = re.search(r"(\d+)", str(inner_obj.get("DeckID", "")))
+            deck_uid64 = int(match.group(1)) if match else 0
+            deck_id = deck_uid64 >> 8
+            removed = bool(deck_id and self.user_profile and db_delete_deck(
+                deck_id, self.user_profile["id"], conn=_db))
+            _db.commit()
+            log_req(f">>> RemoveDeck (dt=2093): deck={deck_id} "
+                    f"removed={removed}")
+            resp_inner = encode_objfmt_response(
+                ["Game.Client.Network.Profile.RemoveDeckResponse",
+                 "Game.Shared.UID", "System.UInt64", "System.Boolean"],
+                [("DeckID", "uid", deck_uid64),
+                 ("succeded", "bool", removed)])
+            resp_body = compress_gzip(resp_inner) if comp else resp_inner
+            resp_reqid = reqid | 1
+            dw_bytes = encode_datawrapper(resp_reqid, data_type, resp_body, comp, session_id)
+            issuer_str = f"0.0.0.0.ServiceProfile.{SERVICE_PROFILE_UID}.ServicePlayer.{self.client_uid}.{resp_reqid}"
+            self.scnt += 1
+            self.send({"issuer": issuer_str, "target": target, "instance": instance,
+                "reqid": resp_reqid, "c": comp, "conh": conh, "sid": self.sid}, dw_bytes)
+
         # Deck stubs
         elif data_type in (22013, 25021, 150000):
             log_req(f">>> Stub dt={data_type}")

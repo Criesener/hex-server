@@ -1272,6 +1272,20 @@ def db_deck_champion_name(deck_id, conn=None):
     return _row_value(row, "champion_name", 0) if row else None
 
 
+def db_delete_deck(deck_id, user_id, conn=None):
+    """Delete one of the user's decks and clear champions that last used it."""
+    connection = _profile_connection(conn)
+    cur = connection.execute(
+        "DELETE FROM decks WHERE id=? AND user_id=?", (deck_id, user_id))
+    if cur.rowcount:
+        connection.execute(
+            "UPDATE champions SET last_deck_id=0 "
+            "WHERE user_id=? AND last_deck_id=?", (user_id, deck_id))
+    if conn is None:
+        connection.commit()
+    return cur.rowcount
+
+
 def db_set_champion_last_deck(champion_id, deck_id, user_id=None, conn=None):
     connection = _profile_connection(conn)
     predicate = "id=?"
