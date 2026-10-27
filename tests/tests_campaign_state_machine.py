@@ -1726,6 +1726,23 @@ def test_campaign_game_end_cleans_up_once():
         db.close()
         os.unlink(path)
 
+
+def test_fortune_of_blood_resolves_both_authored_abilities():
+    """Issue #9: Fortune of Blood lists its random-threshold ability twice."""
+    db, path = cloned_db()
+    try:
+        blood = db.execute("SELECT guid FROM card_templates "
+                           "WHERE name='Fortune of Blood'").fetchone()[0]
+        guids = campaign._fortune_ability_guids(db, blood)
+        assert len(guids) == 2 and len(set(guids)) == 1, guids
+        fortunes = campaign._fortune_card_guids(db)
+        assert len(fortunes) == 10, fortunes
+        assert all(campaign._fortune_ability_guids(db, guid)
+                   for guid in fortunes)
+    finally:
+        db.close()
+        os.unlink(path)
+
 if __name__ == "__main__":
     tests = [
         test_cross_zila_objective_is_linked_to_savage_lord,
@@ -1762,6 +1779,7 @@ if __name__ == "__main__":
         test_post_crayburn_report_opens_the_az1_transition,
         test_tamed_capture_pushes_the_quest_progress,
         test_campaign_game_end_cleans_up_once,
+        test_fortune_of_blood_resolves_both_authored_abilities,
     ]
     for test in tests:
         test()

@@ -6912,21 +6912,24 @@ def _fortune_card_guids(db):
     return [str(row[0]).lower() for row in rows if row[0]]
 
 
-def _fortune_ability_guid(db, card_guid):
-    """Return the first ability authored on a Fortune card."""
+def _fortune_ability_guids(db, card_guid):
+    """Return every ability authored on a Fortune card, duplicates included.
+
+    Fortune of Blood lists its "random threshold" ability twice and grants
+    two thresholds; only the first one used to resolve (issue #9).
+    """
     raw_abilities = pvp_db.db_template_ability_payload(
         str(card_guid).lower(), conn=db)
     if raw_abilities is None:
-        return None
+        return []
     try:
         abilities = json.loads(raw_abilities or "[]")
     except (TypeError, ValueError, json.JSONDecodeError):
         abilities = []
-    for ability in abilities if isinstance(abilities, list) else []:
-        guid = str(ability or "").lower()
-        if guid and pvp_db.db_ability_metadata(guid, conn=db):
-            return guid
-    return None
+    return [str(ability).lower()
+            for ability in (abilities if isinstance(abilities, list) else [])
+            if ability and pvp_db.db_ability_metadata(
+                str(ability).lower(), conn=db)]
 
 
 def _fortune_starting_hand_bonus(db, ability_guid):
@@ -6980,7 +6983,7 @@ def resolve_battle_config(handler, db, camp_id, session_name):
     player_starting_health = 20
     is_tutorial = False
     fortune_guid = None
-    fortune_ability_guid = None
+    fortune_ability_guids = []
     fortune_starting_hand_bonus = 0
     if camp_id:
         row = pve_db.db_campaign_battle_profile(camp_id, conn=db)
@@ -6996,9 +6999,11 @@ def resolve_battle_config(handler, db, camp_id, session_name):
                     "Data") or {})
                 fortune_guid = str(data.get("gaal_fortune_guid") or "").lower()
                 if fortune_guid:
-                    fortune_ability_guid = _fortune_ability_guid(db, fortune_guid)
-                    fortune_starting_hand_bonus = _fortune_starting_hand_bonus(
-                        db, fortune_ability_guid)
+                    fortune_ability_guids = _fortune_ability_guids(
+                        db, fortune_guid)
+                    fortune_starting_hand_bonus = sum(
+                        _fortune_starting_hand_bonus(db, guid)
+                        for guid in fortune_ability_guids)
             except Exception:
                 is_tutorial = True
     profile = getattr(handler, "user_profile", None) or {}
@@ -7077,7 +7082,7 @@ def resolve_battle_config(handler, db, camp_id, session_name):
         "player_starting_health": player_starting_health,
         "is_tutorial": is_tutorial,
         "fortune_guid": fortune_guid,
-        "fortune_ability_guid": fortune_ability_guid,
+        "fortune_ability_guids": fortune_ability_guids,
         "fortune_starting_hand_bonus": fortune_starting_hand_bonus,
         "mercenary_deck_cards": mercenary["deck_cards"] if mercenary else None,
     }

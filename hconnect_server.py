@@ -13188,27 +13188,32 @@ class HCPHandler(ProfileStreamMixin):
             # EachOpposingChampion, while EachChampion effects still affect
             # both champions. Sapphire's opening-hand modifier was applied
             # before the hand was dealt above.
-            fortune_ability = getattr(
-                self, "_campaign_fortune_ability_guid", None)
+            fortune_abilities = list(getattr(
+                self, "_campaign_fortune_ability_guids", None) or ())
             fortune_guid = getattr(self, "_campaign_fortune_guid", None)
-            if fortune_ability:
+            if fortune_abilities:
                 self._current_bstate = bstate
                 try:
                     from rules_port.resolution import resolve_port_ability
                     fortune_source = int(self._ai_champ_scid.uid.uid64)
-                    fortune_log = resolve_port_ability(
-                        self, game, session, _db, pl_t, ai_t, bstate,
-                        fortune_ability, fortune_source, 0, target_map={})
-                    log_req(f"    Fortune {fortune_guid}: {fortune_log}")
+                    # Every authored ability resolves; Fortune of Blood lists
+                    # its random threshold twice (issue #9).
+                    for fortune_ability in fortune_abilities:
+                        fortune_log = resolve_port_ability(
+                            self, game, session, _db, pl_t, ai_t, bstate,
+                            fortune_ability, fortune_source, 0, target_map={})
+                        log_req(f"    Fortune {fortune_guid} "
+                                f"{fortune_ability}: {fortune_log}")
+                        for key in ("player_mod_target", "player_spell_target",
+                                    "resolving_target_uid",
+                                    "resolving_effect_guid"):
+                            bstate.pop(key, None)
                 except Exception as exc:
                     log_req(f"    Fortune {fortune_guid} error: {exc}")
                 finally:
-                    for key in ("player_mod_target", "player_spell_target",
-                                "resolving_target_uid", "resolving_effect_guid"):
-                        bstate.pop(key, None)
                     campaign.consume_fortune(_db, camp_id, fortune_guid)
                     self._campaign_fortune_guid = None
-                    self._campaign_fortune_ability_guid = None
+                    self._campaign_fortune_ability_guids = []
             game.player_threshold = dict(bstate.get("player_threshold", {}))
             game.player_charges = bstate.get("player_charges", 0)
             game.player_resources = bstate.get("player_resources", 0)
@@ -16907,7 +16912,7 @@ class HCPHandler(ProfileStreamMixin):
             self._scene_targeted_ability_owners = {}
             self._champion_granted_ability_guids = {}
             self._campaign_fortune_guid = None
-            self._campaign_fortune_ability_guid = None
+            self._campaign_fortune_ability_guids = []
             self._campaign_fortune_starting_hand_bonus = 0
             player_champ_id = game._new_card_id()
             ai_champ_id = game._new_card_id()
@@ -16950,8 +16955,8 @@ class HCPHandler(ProfileStreamMixin):
                 is_tutorial = cfg["is_tutorial"]
                 player_champ_guid = cfg["player_champ_guid"]
                 self._campaign_fortune_guid = cfg.get("fortune_guid")
-                self._campaign_fortune_ability_guid = cfg.get(
-                    "fortune_ability_guid")
+                self._campaign_fortune_ability_guids = list(cfg.get(
+                    "fortune_ability_guids") or ())
                 self._campaign_fortune_starting_hand_bonus = int(
                     cfg.get("fortune_starting_hand_bonus", 0) or 0)
                 mercenary_deck_cards = cfg.get("mercenary_deck_cards")
