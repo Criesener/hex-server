@@ -26,3 +26,4 @@ share/
 .env
 .env.*
 .venv-pyright/
+.DS_Store

@@ -1,5 +1,8 @@
 # Hex TCG Private Server
 
+> **Fork notice:** this is a fork of [MTGQuarters/hex-server](https://github.com/MTGQuarters/hex-server)
+> with additional fixes and macOS tooling. See [FORK.md](FORK.md).
+
 This repository builds an authoritative private server for **HEX: Shards of
 Fate**. It allows an original game client to connect to a locally controlled
 or privately deployed backend while the server owns the game session,
