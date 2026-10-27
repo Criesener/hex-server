@@ -39,20 +39,30 @@ def _target_metadata(context):
 
 
 def _find_zone(filter_node):
+    """The filter's ``InZone`` collection, or the deck when it names none."""
+    return _authored_zone(filter_node) or "deck"
+
+
+def _authored_zone(filter_node):
+    # Only the outermost call may fall back to the deck.  Returning the
+    # default from nested values made the first sibling filter (Shadowgrove
+    # Witch's IsType before its InZone Hand) answer "deck", so "a random card
+    # from your hand" was looked up in the deck and nothing was revealed
+    # (issue #12).
     if isinstance(filter_node, dict):
         kind = str(filter_node.get("_t", "")).rsplit(".", 1)[-1]
         if kind == "InZone" and filter_node.get("m_Collection"):
             return str(filter_node["m_Collection"]).rsplit(".", 1)[-1].lower()
-        for value in filter_node.values():
-            found = _find_zone(value)
-            if found:
-                return found
+        values = filter_node.values()
     elif isinstance(filter_node, list):
-        for value in filter_node:
-            found = _find_zone(value)
-            if found:
-                return found
-    return "deck"
+        values = filter_node
+    else:
+        return None
+    for value in values:
+        found = _authored_zone(value)
+        if found:
+            return found
+    return None
 
 
 def _reveal_owner(context, owner, target_kind):
