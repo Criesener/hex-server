@@ -2555,23 +2555,27 @@ def _quest_hook_az1_tamed_start(db, champ_id, state):
     # route is resolved; it must not appear on a fresh AZ1 map.
     _az1_set_node_gate(state, "Node015", True)
     pdata = state.setdefault("PublicState", {}).setdefault("Data", {})
+    west_bridge_gated = "Node015" not in {
+        str(value) for value in (pdata.get("unlocked_nodes") or [])}
     # A stale save may contain a prior west-bridge visit.  While the gate is
     # active, purge that visit/path so reconnect hydration cannot resurrect
-    # the node merely because it was once discovered.
-    pdata["visited_nodes"] = [
-        value for value in (pdata.get("visited_nodes") or [])
-        if str(value) not in {"Node015", "Bridge over the Zila - West"}
-    ]
-    pdata["visited_paths"] = [
-        value for value in (pdata.get("visited_paths") or [])
-        if "Node015" not in str(value)
-    ]
-    if isinstance(pdata.get("conversation_visits"), dict):
-        pdata["conversation_visits"].pop("Node015", None)
+    # the node merely because it was once discovered.  Once the Savage Lord
+    # opened the bridge the visit is real and must survive (issue #11).
+    if west_bridge_gated:
+        pdata["visited_nodes"] = [
+            value for value in (pdata.get("visited_nodes") or [])
+            if str(value) not in {"Node015", "Bridge over the Zila - West"}
+        ]
+        pdata["visited_paths"] = [
+            value for value in (pdata.get("visited_paths") or [])
+            if "Node015" not in str(value)
+        ]
+        if isinstance(pdata.get("conversation_visits"), dict):
+            pdata["conversation_visits"].pop("Node015", None)
     _az1_reveal_neighbors(db, state, state.get("LastNode"))
     for loc in state.get("VisLocs", []):
         data = loc.get("Data") or {}
-        if data.get("node") == "Node015" or (
+        if (data.get("node") == "Node015" and west_bridge_gated) or (
                 data.get("node") == "Node018" and not zodiac_active):
             data.update({"visible": False, "enabled": False})
     return json.dumps(state, sort_keys=True) != before
@@ -2994,6 +2998,8 @@ def _apply_az1_quest_markers(db, champ_id, state):
 
     quest_nodes = set()
     active_objective_conversations = set()
+    # Objective conversations that close their quest; only these are turn-ins.
+    turnin_objective_conversations = set()
     quest_rows = pve_db.db_started_quest_states(champ_id, conn=db)
     for quest_script, raw_state in quest_rows:
         try:
@@ -3020,9 +3026,11 @@ def _apply_az1_quest_markers(db, champ_id, state):
         if 0 <= objective_index < len(objectives):
             current = objectives[objective_index]
             if isinstance(current, dict):
-                active_objective_conversations.update(
-                    _quest_objective_conversation_guids(
-                        db, champ_id, quest_script, current))
+                guids = _quest_objective_conversation_guids(
+                    db, champ_id, quest_script, current)
+                active_objective_conversations.update(guids)
+                if _quest_is_turnin_ready(quest_state):
+                    turnin_objective_conversations.update(guids)
         completed = {
             str((loc.get("Data") or {}).get("node") or
                 (loc.get("Data") or {}).get("name"))
@@ -3124,8 +3132,16 @@ def _apply_az1_quest_markers(db, champ_id, state):
         if data.get("autostart") is not True:
             data["autostart"] = True
             changed = True
-        if data.get("turninquest") is not True:
-            data["turninquest"] = True
+        # The client waits for a reward after a QuestTurnIn conversation and
+        # neither reveals paths nor starts the next node until it arrives.
+        # A mid-quest step without rewards (Winston's "you beat the Savage
+        # Lord") must not carry the flag, or the Zila bridge never lowers
+        # (issue #11).
+        reward = pve_db.db_conversation_reward(conversation, conn=db)
+        turnin = (conversation in turnin_objective_conversations or
+                  bool(reward and reward[2]))
+        if bool(data.get("turninquest")) != turnin:
+            data["turninquest"] = turnin
             changed = True
     return changed
 

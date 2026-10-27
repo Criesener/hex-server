@@ -1743,6 +1743,66 @@ def test_fortune_of_blood_resolves_both_authored_abilities():
         db.close()
         os.unlink(path)
 
+
+def test_only_closing_quest_conversations_are_turn_ins():
+    """Issue #11: "Return to Winston" (mid-quest, no reward) is not a turn-in.
+
+    The client waits for a reward after a QuestTurnIn conversation and neither
+    lowers the Zila bridge nor starts Weston until it arrives."""
+    db, path = cloned_db()
+    try:
+        db.execute(
+            "DELETE FROM campaigns WHERE champion_id=? AND campaign_type='QUEST' "
+            "AND template_name='az01_q_cross_the_river'", (6,))
+        db.commit()
+        assert campaign._ensure_quest_campaign(
+            db, 6, "AREA", "az01_q_cross_the_river")
+        _area_id, state = area_state(db)
+        pdata = state.setdefault("PublicState", {}).setdefault("Data", {})
+        pdata["unlocked_nodes"] = ["Node015"]
+        assert campaign._advance_quest_encounter_objectives(
+            db, 6, SAVAGE_LORD)
+        campaign._apply_az1_quest_markers(db, 6, state)
+        locations = {item["Data"].get("node"): item["Data"]
+                     for item in state["VisLocs"]}
+        assert locations["Node012"]["turninquest"] is False, locations["Node012"]
+        quest_id, quest_state = campaign._quest_state_row(
+            db, 6, "az01_q_cross_the_river")
+        quest_state["Flags"]["_quest_objective_idx"] = 2
+        db.execute("UPDATE campaigns SET state_json=? WHERE id=?",
+                   (json.dumps(quest_state), quest_id))
+        db.commit()
+        campaign._apply_az1_quest_markers(db, 6, state)
+        assert locations["Node015"]["turninquest"] is True, locations["Node015"]
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def test_unlocked_west_bridge_visit_survives_the_tamed_gate():
+    """Issue #11: the Tamed gate purged Node015 even after it was unlocked."""
+    db, path = cloned_db()
+    try:
+        _area_id, state = area_state(db)
+        pdata = state.setdefault("PublicState", {}).setdefault("Data", {})
+        pdata.update({"unlocked_nodes": ["Node015"],
+                      "visited_nodes": ["Node012", "Node015"],
+                      "visited_paths": ["Path_Node012_Node015"],
+                      "conversation_visits": {"Node015": 1}})
+        campaign._quest_hook_az1_tamed_start(db, 6, state)
+        assert "Node015" in pdata["visited_nodes"]
+        assert "Path_Node012_Node015" in pdata["visited_paths"]
+        assert pdata["conversation_visits"].get("Node015") == 1
+        west = next(x["Data"] for x in state["VisLocs"]
+                    if x["Data"].get("node") == "Node015")
+        assert west.get("visible") is not False, west
+        pdata["unlocked_nodes"] = []
+        campaign._quest_hook_az1_tamed_start(db, 6, state)
+        assert "Node015" not in pdata["visited_nodes"]
+    finally:
+        db.close()
+        os.unlink(path)
+
 if __name__ == "__main__":
     tests = [
         test_cross_zila_objective_is_linked_to_savage_lord,
@@ -1780,6 +1840,8 @@ if __name__ == "__main__":
         test_tamed_capture_pushes_the_quest_progress,
         test_campaign_game_end_cleans_up_once,
         test_fortune_of_blood_resolves_both_authored_abilities,
+        test_only_closing_quest_conversations_are_turn_ins,
+        test_unlocked_west_bridge_visit_survives_the_tamed_gate,
     ]
     for test in tests:
         test()
