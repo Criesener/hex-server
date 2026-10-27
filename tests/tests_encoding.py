@@ -983,6 +983,17 @@ def test_card_moved_accepts_new_card_id_scid():
     print("  PASS test_card_moved_accepts_new_card_id_scid")
 
 
+def test_game_started_keeps_the_board_deck_plate():
+    """Issue #2: no ladder division by default, so the board's own plate."""
+    import game_engine
+    from domain.game import Game
+    g = Game(1, game_engine.UID.make(244, 5), game_engine.UID.make(3, 1000))
+    g.push_game_started(player_first=True)
+    g.push_game_started(player_first=True, divisions=[2, 0])
+    started = [ev for ev in g.events
+               if type(ev).__name__ == "GameStartedSessionEventArgs"]
+    assert [ev.divisions for ev in started] == [[], [2, 0]], started
+
 def test_redact_secrets_masks_login_password():
     from db import redact_secrets
     body = '{"action":"auth","user":"a@b.c","pass":"s3\\"cr","token":"t","region":"EU"}'
@@ -1006,6 +1017,7 @@ def run_all():
         test_size_table_consistency,
         test_card_moved_accepts_new_card_id_scid,
         test_redact_secrets_masks_login_password,
+        test_game_started_keeps_the_board_deck_plate,
     ]
     failed = 0
     for t in tests:

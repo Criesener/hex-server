@@ -778,7 +778,8 @@ class Game:
         self._push(ev)
 
     def push_game_started(self, champion_names=None, champion_template_ids=None,
-                          player_first=None, sleeve_template_ids=None):
+                          player_first=None, sleeve_template_ids=None,
+                          divisions=None):
         ev = self._make_event(GameStartedSessionEventArgs)
         if player_first is None:
             ev.turn_order = [self.player_uid, self.ai_uid]
@@ -804,7 +805,10 @@ class Game:
             self.set_deck_sleeve(_uid, _sleeve)
         ev.board_template_ids = []
         ev.coin_template_ids = []
-        ev.divisions = [1, 1]
+        # Divisions pick the deck plate: a ladder tier (0 Bronze .. 4 Cosmic)
+        # loads DeckDais_*_{tier+1}; an empty list keeps the battleboard's
+        # own plate, as in campaign, PvE and casual games.
+        ev.divisions = list(divisions or ())
         ev.seed_w = 0xABCDEF01
         ev.seed_z = 0x12345678
         self._push(ev)
