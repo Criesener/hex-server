@@ -1390,6 +1390,9 @@ class HCPHandler(ProfileStreamMixin):
                     ai_uid=projection.ai_uid, battle_state=current_state,
                     event_type="CombatEndedEvent", source_card_id=None,
                     source_player_id=owner_id)
+                self._end_combat_card_states(
+                    _session, current_state, projection,
+                    player_turn=bool(owner_id))
                 save_state(_session, current_state)
                 return None
             port.set_turn_phase_exit_resolver(native_phase_exit)
@@ -8248,6 +8251,35 @@ class HCPHandler(ProfileStreamMixin):
                 forced.append(int(uid))
         return forced
 
+    def _end_combat_card_states(self, session, bstate, game, player_turn):
+        """Clear Attacking/Blocking when a combat ends (C# EndCombat).
+
+        HasAttacked/HasBlocked stay for the turn.  A troop that attacked and
+        is readied again (Xocoy, issue #13) must be offered as an attacker
+        in an additional combat phase; the stale Attacking bit excluded it.
+        """
+        from pvp_db import db_warzone_display_rows, db_set_card_state_exact
+        clear = int(game_engine.ECardStates.Attacking |
+                    game_engine.ECardStates.Blocking)
+        for uid, template, owner, state, _card_type in db_warzone_display_rows(
+                session.session_id, conn=_db):
+            state = int(state or 0)
+            if not state & clear:
+                continue
+            new_state = state & ~clear
+            db_set_card_state_exact(session.session_id, int(uid), new_state,
+                                    conn=_db)
+            scid = game_engine.SessionCardId(game_engine.UID(int(uid)))
+            _tpl, card_type, _n, _c, _a, _d, _g = self._card_full_data(
+                game, scid, template)
+            game.push_card_updated(
+                scid, game.player_uid if int(owner or 0) else game.ai_uid,
+                game_engine.ECardCollections.Warzone, card_type,
+                template_id=template, state=new_state)
+        if player_turn:
+            bstate.pop("player_attackers", None)
+        _db.commit()
+
     def _declare_force_attackers_on_exit(self, session, port):
         """DeclareAttack OnExit: add the player's "Must attack" troops.
 
@@ -9753,7 +9785,8 @@ class HCPHandler(ProfileStreamMixin):
                 "currentresource", refill)
         clear_expired_temporary_attributes(
             _db, session.session_id, owner_id, "start_turn",
-            clear_stat_buffs=True, battle_state=bstate, handler=self)
+            clear_stat_buffs=True, battle_state=bstate, handler=self,
+            game=projection_game)
         reset_armor(_db, session.session_id, bstate)
         changes = ready_cards_for_turn(_db, session.session_id, owner_id)
         recipient = pl_t if is_player else ai_t
@@ -9778,7 +9811,8 @@ class HCPHandler(ProfileStreamMixin):
             _db, session, self, projection_game, owner_id, pl_t, ai_t, bstate)
         clear_expired_temporary_attributes(
             _db, session.session_id, owner_id, "prep",
-            clear_stat_buffs=True, battle_state=bstate, handler=self)
+            clear_stat_buffs=True, battle_state=bstate, handler=self,
+            game=projection_game)
         # Recompute the combat branch after Prep for whichever side is
         # active.  Previously this only ran for the human, leaving the AI's
         # stale ``player_has_ready_troop`` value from its prior main phase;
@@ -10024,6 +10058,61 @@ class HCPHandler(ProfileStreamMixin):
                     f"updated {changed} warzone card(s)")
         return changed
 
+    def _champion_ability_list(self, champion_scid, bstate):
+        """Base champion abilities plus its current granted abilities.
+
+        Granted champion abilities (e.g. Overwatch's "until the start of your
+        next turn" trigger) appear in the client only as extra ability
+        buttons from the champion's CardUpdated ability list (issue #10).
+        """
+        from rules_port.effect_lifetimes import champion_grants
+        uid = int(champion_scid.uid.uid64)
+        if champion_scid == getattr(self, "_player_champ_scid", None):
+            base = list(getattr(self, "_player_champ_abilities", []) or [])
+        else:
+            base = [game_engine.ResourceId.from_str(g) for g in
+                    getattr(self, "_ai_champ_ability_guids", []) or []]
+        known = {str(getattr(value, "guid", value)).lower() for value in base}
+        granted = list((getattr(self, "_champion_granted_ability_guids", {})
+                        or {}).get(uid, ()) or ())
+        granted += list(champion_grants(bstate or {}, uid))
+        for guid in dict.fromkeys(str(value).lower() for value in granted):
+            if guid not in known:
+                base.append(game_engine.ResourceId.from_str(guid))
+                known.add(guid)
+        return base
+
+    def push_champion_abilities(self, game, bstate, champion_uid):
+        """Re-send a champion's ability list after a grant or its expiry."""
+        if game is None:
+            return
+        for attr, owner_uid, template_attr, health_key in (
+                ("_player_champ_scid", game.player_uid, "_player_champ_guid",
+                 "player_health"),
+                ("_ai_champ_scid", game.ai_uid, "_ai_champ_guid", "ai_health")):
+            scid = getattr(self, attr, None)
+            if scid is None or int(scid.uid.uid64) != int(champion_uid):
+                continue
+            abilities = self._champion_ability_list(scid, bstate)
+            cdef = game.card_defs.get(scid)
+            if cdef is not None:
+                cdef.abilities = abilities
+            else:
+                health = int((bstate or {}).get(health_key, 20) or 20)
+                game.card_defs[scid] = game_engine.CardDef(
+                    "Champion", game_engine.ECardTypes.Champion, 0, health,
+                    health, [], abilities)
+            # Champions are cached as collection None (the battle-start
+            # seed); a Champions collection would be read as a move and
+            # leave a full-size champion card on the board.
+            game.push_card_updated(
+                scid, owner_uid, game_engine.ECardCollections.None_,
+                game_engine.ECardTypes.Champion,
+                template_id=getattr(self, template_attr, None),
+                defense=int((bstate or {}).get(health_key, 20) or 20))
+            log_req(f"    Champion abilities pushed for {hex(int(champion_uid))}: "
+                    f"{len(abilities)}")
+
     def _push_champions_warm(self, session, pl_t, ai_t, bstate, game):
         """Rebuild both champion CardDefs for the next packet.
 
@@ -10048,17 +10137,16 @@ class HCPHandler(ProfileStreamMixin):
             ai_cdef = game_engine.CardDef(
                 "AI", game_engine.ECardTypes.Champion, 0,
                 bstate.get("ai_health", 10), bstate.get("ai_health", 10),
-                [], [game_engine.ResourceId.from_str(g) for g in getattr(self, "_ai_champ_ability_guids", [])])
+                [], self._champion_ability_list(ai_champ, bstate))
             ai_cdef.counters = dict(champion_counters.get(
                 str(int(ai_champ.uid.uid64)), {}) or {})
             game.card_defs[ai_champ] = ai_cdef
         pl_champ = getattr(self, "_player_champ_scid", None)
         if pl_champ:
-            pl_abilities = getattr(self, "_player_champ_abilities", [])
             cdef = game_engine.CardDef(
                 "Player", game_engine.ECardTypes.Champion, 0,
                 bstate.get("player_health", 17), bstate.get("player_health", 17),
-                [], list(pl_abilities))
+                [], self._champion_ability_list(pl_champ, bstate))
             cdef.counters = dict(champion_counters.get(
                 str(int(pl_champ.uid.uid64)), {}) or {})
             # Carry the persisted spell-power escalation (player_sp_uses) onto

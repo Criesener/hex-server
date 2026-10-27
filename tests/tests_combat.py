@@ -1114,6 +1114,107 @@ def test_must_attack_troop_joins_on_declare_attack_exit(db):
         hcs._db = old_hcs_db
         dbmod._db = old_db
 
+def test_overwatch_champion_grant_expires_at_owners_next_turn(db):
+    """Issue #10: Ranger's Overwatch ("until the start of your next turn")
+    was recorded as Instant, so its granted trigger never expired; the
+    champion also never showed the granted ability."""
+    from rules_port.resolution import resolve_port_ability
+    from rules_port.lifecycle import clear_expired_temporary_attributes
+    overwatch = "75f37428-abec-3d4a-9ace-40e9e7e5989e"
+    granted = "c591d158-7741-b994-e95a-bac459b9c567"
+    h = HandlerStub(db)
+    pushes = []
+    h.push_champion_abilities = lambda game, state, uid: pushes.append(
+        (int(uid), granted in [str(g).lower() for g in
+                               state.get("temporary_ability_grants", [{}])
+                               and [e.get("ability_guid") for e in
+                                    state.get("temporary_ability_grants", [])]]))
+    pl_t, ai_t = game_engine.UID.make(244, 5), game_engine.UID.make(3, 1000)
+    g = game_engine.Game(1, pl_t, ai_t)
+    champ = int(h._player_champ_scid.uid.uid64)
+    bstate = {"turn_player": "player", "turn_number": 3,
+              "resolving_owner_id": 5,
+              "champ_map": {"5": champ,
+                            "0": int(h._ai_champ_scid.uid.uid64)}}
+    resolve_port_ability(h, g, SessionStub(), db, pl_t, ai_t, bstate,
+                         overwatch, champ, 5, target_map={})
+    grants = bstate.get("temporary_ability_grants") or []
+    assert [(e["ability_guid"], e["duration"]) for e in grants] == [
+        (granted, "BeginningOfOwnersTurn")], grants
+    assert pushes and pushes[0][0] == champ, pushes
+    clear_expired_temporary_attributes(db, 1, 0, "prep", clear_stat_buffs=True,
+                                       battle_state=bstate, handler=h, game=g)
+    assert bstate.get("temporary_ability_grants"), "AI turn must keep it"
+    clear_expired_temporary_attributes(db, 1, 5, "prep", clear_stat_buffs=True,
+                                       battle_state=bstate, handler=h, game=g)
+    assert not bstate.get("temporary_ability_grants"), bstate
+    dynamic = h._champion_granted_ability_guids.get(champ, [])
+    assert granted not in dynamic, dynamic
+    assert len(pushes) == 2, pushes
+
+def test_xocoy_self_slot_and_extra_combat_attackers(db):
+    """Issue #13: Xocoy's "Ready Xocoy. Ready another target troop" bound the
+    chosen troop to the #SELF# slot too, and attackers kept Attacking after
+    combat, so a readied attacker was not offered in the extra combat."""
+    import hconnect_server as hcs
+    import db as dbmod
+    from rules_port.resolution import _source_slots_target_source
+    old_hcs_db, old_db = hcs._db, dbmod._db
+    hcs._db = dbmod._db = db
+    try:
+        row = db.execute("SELECT ability_guid FROM card_abilities_meta "
+                         "WHERE ability_guid LIKE '3005e69e%'").fetchone()
+        if row is None:
+            src = sqlite3.connect(SRC)
+            row = src.execute("SELECT ability_guid FROM card_abilities_meta "
+                              "WHERE ability_guid LIKE '3005e69e%'").fetchone()
+            src.close()
+        xocoy = row[0]
+        bound = _source_slots_target_source(xocoy, 3073,
+                                            {0: [2305], 1: [2305]})
+        assert bound[0] == (3073,) and bound[1] == [2305], bound
+        assert _source_slots_target_source(xocoy, 3073, {1: [2305]}) == \
+            {1: [2305]}
+
+        attacked = (game_engine.ECardStates.Attacking |
+                    game_engine.ECardStates.HasAttacked |
+                    game_engine.ECardStates.StartedATurnOnYourSide)
+        add_card(db, 501, 5, TPL_GLADIATOR, state=int(attacked))
+        h = object.__new__(hcs.HCPHandler)
+        h.user_profile = {"id": 5}
+        h.client_reck_id = 5
+        h._card_full_data = lambda game, scid, tpl: (
+            tpl, game_engine.ECardTypes.Troop, "x", 0, 0, 0, 0)
+        pl_t = game_engine.UID.make(244, 5)
+        ai_t = game_engine.UID.make(3, 1000)
+        game = game_engine.Game(1, pl_t, ai_t)
+        bstate = {"player_attackers": {"501": "0"}}
+        h._end_combat_card_states(SessionStub(), bstate, game, True)
+        state = db.execute("SELECT card_state FROM game_cards WHERE "
+                           "card_uid=501").fetchone()[0]
+        assert not state & game_engine.ECardStates.Attacking, hex(state)
+        assert state & game_engine.ECardStates.HasAttacked, hex(state)
+        assert "player_attackers" not in bstate
+    finally:
+        hcs._db = old_hcs_db
+        dbmod._db = old_db
+
+def test_reveal_zone_reads_the_authored_in_zone_filter(db):
+    """Issue #12: Shadowgrove Witch's "a random card from your hand" filter
+    starts with IsType; the zone lookup answered "deck" from that sibling."""
+    from rules_port.reveal_effects import _find_zone
+    witch_hand = {"_t": "Game.Shared.Mechanics.Cards.Filters.AndCardFilter",
+                  "m_TargetFilters": [
+                      {"_t": "Game.Shared.Mechanics.Cards.Filters.IsType",
+                       "m_CardType": "Troop|BasicAction"},
+                      {"_t": "Game.Shared.Mechanics.Cards.Filters.IsControlledBy",
+                       "m_TestAgainstActivePlayer": 0},
+                      {"_t": "Game.Shared.Mechanics.Cards.Filters.InZone",
+                       "m_Collection": "Hand"}]}
+    assert _find_zone(witch_hand) == "hand"
+    assert _find_zone({"_t": "IsTroop"}) == "deck"
+    assert _find_zone({}) == "deck"
+
 def test_ragefire_escalation_damage(db):
     """Ragefire ("Deal ESC:2 damage", Escalation) deals 2 to a targeted
     champion on the first cast, increments same-name card instances, then a
@@ -2412,6 +2513,12 @@ def main():
         ("Speed troop attacks same turn", test_speed_troop_can_attack_same_turn),
         ("Must attack troop joins on DeclareAttack exit",
          test_must_attack_troop_joins_on_declare_attack_exit),
+        ("Overwatch champion grant expires at owner's next turn",
+         test_overwatch_champion_grant_expires_at_owners_next_turn),
+        ("Xocoy self slot and extra combat attackers",
+         test_xocoy_self_slot_and_extra_combat_attackers),
+        ("Reveal zone reads the authored InZone filter",
+         test_reveal_zone_reads_the_authored_in_zone_filter),
         ("Ragefire escalation damage", test_ragefire_escalation_damage),
         ("AI discards to 7", test_ai_discard_down_to_seven),
         ("X-cost detection + damage", test_x_cost_detection_and_damage),

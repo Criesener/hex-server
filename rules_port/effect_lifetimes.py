@@ -25,10 +25,21 @@ def mapping_duration(context) -> str:
     """Return the duration on the active AbilityEffectTargetMapping."""
     ability = getattr(context, "ability", None)
     metadata = getattr(ability, "metadata", ability)
+    wanted = str(getattr(context, "effect_guid", "") or "").lower()
     for effect in getattr(metadata, "effects", ()) or ():
-        guid = str(getattr(effect, "guid", "") or "").lower()
-        if guid == str(getattr(context, "effect_guid", "") or "").lower():
-            return str(getattr(effect, "duration", "Instant") or "Instant")
+        # Records metadata carries typed effects; the SQL metadata path
+        # carries dict rows keyed ``effect_guid``/``effect_duration``.
+        # Reading only attributes made every dict-row effect "Instant", so
+        # duration-bound grants were never recorded and never expired
+        # (issue #10: Overwatch kept firing after its owner's next turn).
+        if isinstance(effect, dict):
+            guid = effect.get("guid", effect.get("effect_guid"))
+            duration = effect.get("duration", effect.get("effect_duration"))
+        else:
+            guid = getattr(effect, "guid", "")
+            duration = getattr(effect, "duration", None)
+        if str(guid or "").lower() == wanted:
+            return str(duration or "Instant")
     return "Instant"
 
 
@@ -181,6 +192,7 @@ def expire_grants(db, session_id, state, *, boundary=None,
                         db_set_card_abilities)
     remaining = []
     changed = []
+    expired_champions = []
     champion_uids = {int(value) for value in
                      (state.get("champ_map") or {}).values() if value}
     if handler is not None:
@@ -211,24 +223,7 @@ def expire_grants(db, session_id, state, *, boundary=None,
                 values = dynamic.get(target)
                 if isinstance(values, list) and ability in values:
                     values.remove(ability)
-            if game is not None:
-                try:
-                    import game_engine
-                    from .runtime_helpers import owner_uid
-                    scid = game_engine.SessionCardId(game_engine.UID(target))
-                    cdef = getattr(game, "card_defs", {}).get(scid)
-                    if cdef is not None:
-                        cdef.abilities = [value for value in
-                                          (getattr(cdef, "abilities", []) or [])
-                                          if str(getattr(value, "guid", value)).lower()
-                                          != ability]
-                    owner = next((int(pid) for pid, uid in
-                                  (state.get("champ_map") or {}).items()
-                                  if int(uid) == target), 0)
-                    recipient = owner_uid(owner, player_uid, ai_uid, state)
-                    game.push_player_updated(recipient, champ_id=scid)
-                except (AttributeError, TypeError, ValueError):
-                    pass
+            expired_champions.append(target)
             continue
         if not db_card_source_info(session_id, target, conn=db):
             continue
@@ -244,6 +239,12 @@ def expire_grants(db, session_id, state, *, boundary=None,
             state[_STATE_KEY] = remaining
         else:
             state.pop(_STATE_KEY, None)
+    # The client drops an expired champion ability button only from a new
+    # champion CardUpdated ability list (issue #10).
+    push = getattr(handler, "push_champion_abilities", None)
+    for champion_uid in dict.fromkeys(expired_champions):
+        if callable(push) and game is not None:
+            push(game, state, champion_uid)
     if changed:
         db.commit()
     return changed

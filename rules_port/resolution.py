@@ -1402,6 +1402,32 @@ def build_port_ability(ability_guid, source_uid, owner_id, *, instance_id=1,
     return ability
 
 
+def _source_slots_target_source(ability_guid, source_uid, target_map):
+    """Bind every ``#SELF#`` target slot to the ability's source card.
+
+    The client may echo its selection into a source slot that needed no
+    input: Xocoy's "Ready Xocoy. Ready another target troop" arrived as two
+    slots holding the chosen troop, so Xocoy itself was never readied
+    (issue #13).  The source slot is not a choice.
+    """
+    if source_uid is None or not target_map:
+        return target_map
+    from gamedata import DEFAULT_RECORD_STORE, ability_graph
+    graph = ability_graph(DEFAULT_RECORD_STORE, str(ability_guid).lower())
+    targets = list(getattr(graph, "targets", ()) or ())
+    source_slots = [index for index, target in enumerate(targets)
+                    if str(getattr(target, "target_kind", "") or "") ==
+                    "AbilitySourceCardTargetTemplate"]
+    if not source_slots:
+        return target_map
+    bound = dict(target_map)
+    for index in source_slots:
+        for key in (index, str(index)):
+            if key in bound:
+                bound[key] = (int(source_uid),)
+    return bound
+
+
 def resolve_port_ability(handler, game, session, db, player_uid, ai_uid,
                          battle_state, ability_guid, source_uid, owner_id,
                          *, target_map=None, variables=None,
@@ -1410,6 +1436,8 @@ def resolve_port_ability(handler, game, session, db, player_uid, ai_uid,
                          effect_groups=None, event_tac=None,
                          cost_target_map=None):
     """Resolve a persisted continuation through the port-owned lifecycle."""
+    target_map = _source_slots_target_source(ability_guid, source_uid,
+                                             target_map)
     log_targets = target_map
     if not log_targets:
         fallback = ((battle_state or {}).get("resolving_target_uid")

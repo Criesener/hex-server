@@ -343,6 +343,10 @@ def grant_ability(context):
             added.append(guid)
         record_duration_bound_grants(
             added, context.target_owner(int(destination), default=grant_owner))
+        push = getattr(context.handler, "push_champion_abilities", None)
+        if added and callable(push):
+            # Show the granted ability as a champion ability button.
+            push(context.game, context.bstate, champion_uid)
         # A hidden encounter setup card can grant a GameStarted ability while
         # the event is already traversing the opposing side.  That champion's
         # normal discovery pass has then finished, so run the newly granted

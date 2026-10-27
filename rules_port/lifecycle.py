@@ -490,7 +490,8 @@ def clear_combat_damage(db, session_id):
 
 def clear_expired_temporary_attributes(db, session_id, owner_id, boundary,
                                        clear_stat_buffs=False,
-                                       battle_state=None, handler=None):
+                                       battle_state=None, handler=None,
+                                       game=None):
     """Expire temporary attributes and stat grants at an authored boundary."""
     from pvp_db import (db_temporary_attribute_rows,
                         db_set_temporary_card_state)
@@ -504,7 +505,7 @@ def clear_expired_temporary_attributes(db, session_id, owner_id, boundary,
             boundary_owner=owner_id)
         expire_grants(
             db, session_id, battle_state, boundary=boundary,
-            boundary_owner=owner_id, handler=handler)
+            boundary_owner=owner_id, handler=handler, game=game)
         stat_changes = list(expire_temporary_stats(
             db, session_id, battle_state, boundary=boundary,
             boundary_owner=owner_id))
