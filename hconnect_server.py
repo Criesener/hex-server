@@ -1366,6 +1366,9 @@ class HCPHandler(ProfileStreamMixin):
             def native_phase_exit(phase, _session=session, _state=battle_state,
                                   _port=port):
                 """Publish C# combat completion at its native OnExit point."""
+                if phase == game_engine.ETurnPhases.DeclareAttack:
+                    self._declare_force_attackers_on_exit(_session, _port)
+                    return None
                 if phase == game_engine.ETurnPhases.FirstStrikePriorityWindow:
                     if _port.combat_has_standard_damage:
                         return None
@@ -8175,14 +8178,18 @@ class HCPHandler(ProfileStreamMixin):
                     + ",".join(pending_input()))
             return
         game = self._fresh_game(session, pl_t, ai_t, bstate)
-        self._auto_declare_force_attackers(session, pl_t, ai_t, bstate, game)
-        if pending_input():
+        # C# DeclareAttackState declares "Must attack" troops in OnExit, after
+        # the player chose attackers (issue #6).  Declaring them here took the
+        # attacker choice away and opened their attack-trigger prompt under
+        # the attacker selection.  Only record them so the native phase keeps
+        # its combat windows even when the player skips.
+        forced = self._ready_force_attackers(session, bstate)
+        if forced != list(bstate.get("forced_attackers") or ()):
+            bstate["forced_attackers"] = forced
             _be.save_state(session, bstate)
-            # The forced declaration and the prompt are buffered in ``game``.
-            self._send_battle_events(session, game, pl_t)
-            log_req("    Attack options held after forced attack prompt: "
-                    + ",".join(pending_input()))
-            return
+        port = getattr(session, "_rules_port_session", None)
+        if port is not None:
+            port.has_forced_attackers = bool(forced)
         rows = db_warzone_troops_basic(session.session_id, self.user_profile["id"])
         from rules_port.static_rules import effective_attributes
         ready = []
@@ -8216,34 +8223,20 @@ class HCPHandler(ProfileStreamMixin):
         self._send_battle_events(session, game, pl_t)
         log_req(f"    Attack options: {len(ready)} ready troop(s)")
 
-    def _auto_declare_force_attackers(self, session, pl_t, ai_t, bstate, game):
-        """Server-authoritative "Must attack": every ready player warzone troop
-        with ForceAttack is declared as an attacker automatically, exactly like
-        the client's DeclareAttackState does on the authoritative side — the
-        player cannot forget (or refuse) to attack with them.
-
-        Idempotent: troops already attacking (or already in
-        bstate['player_attackers']) are skipped, so re-pushing the DeclareAttack
-        options never double-declares.
-        """
-        _be = self._checkpoint_engine(session)
-        from pvp_db import db_card_state_value as db_card_state_raw
+    def _ready_force_attackers(self, session, bstate):
+        """Ready player warzone troops with ForceAttack that are not attacking."""
         from rules_port.static_rules import effective_attributes
-        rows = db_warzone_troops_basic(session.session_id,
-                                       self.user_profile["id"])
-        ai_champ_uid = getattr(self, "_ai_champ_scid", None)
-        ai_champ_uid64 = ai_champ_uid.uid.to_uint64() if ai_champ_uid else 0
-        attackers = {int(k): int(v)
-                     for k, v in (bstate.get("player_attackers") or {}).items()}
-        combats = []
-        for uid, ct, state in rows:
+        declared = {int(k) for k in (bstate.get("player_attackers") or {})}
+        forced = []
+        for uid, _ct, state in db_warzone_troops_basic(
+                session.session_id, self.user_profile["id"]):
             state = state or 0
             attrs = int(effective_attributes(
                 _db, session.session_id, bstate, int(uid)) or 0)
             if not (attrs & game_engine.ECardAttributes.ForceAttack):
                 continue
-            if (state & (game_engine.ECardStates.Attacking |
-                         game_engine.ECardStates.Tapped)):
+            if state & (game_engine.ECardStates.Attacking |
+                        game_engine.ECardStates.Tapped):
                 continue
             if not (state & game_engine.ECardStates.StartedATurnOnYourSide) \
                     and not (attrs & game_engine.ECardAttributes.Speed):
@@ -8251,23 +8244,79 @@ class HCPHandler(ProfileStreamMixin):
             if attrs & (game_engine.ECardAttributes.CantAttack |
                         game_engine.ECardAttributes.Defensive):
                 continue
-            u = int(uid)
-            if u in attackers:
-                continue
+            if int(uid) not in declared:
+                forced.append(int(uid))
+        return forced
+
+    def _declare_force_attackers_on_exit(self, session, port):
+        """DeclareAttack OnExit: add the player's "Must attack" troops.
+
+        Mirrors C# ``DeclareAttackState.OnExit``: every ready ForceAttack
+        troop that is not attacking yet joins the attack, then one
+        CardsAttackedEvent is raised.  A commit already raised that event for
+        its own attackers, so it is only raised here when the player skipped.
+        """
+        if not self.user_profile:
+            return
+        projection = getattr(getattr(port, "event_sink", None), "game", None)
+        if projection is None or not _same_uid(
+                getattr(port, "active_player_id", None),
+                projection.player_uid):
+            return
+        from rules_port.persistence import load_state, save_state
+        bstate = load_state(session)
+        self._current_bstate = bstate
+        pl_t, ai_t = projection.player_uid, projection.ai_uid
+        committed = bool(bstate.get("player_attackers"))
+        forced = self._auto_declare_force_attackers(
+            session, pl_t, ai_t, bstate, projection)
+        if forced and not committed:
+            player_champ = (getattr(self, "_player_champ_scid", None) or
+                            game_engine.SessionCardId(pl_t))
+            self._dispatch_game_trigger(
+                projection, session, pl_t, ai_t, bstate, "CardsAttackedEvent",
+                int(player_champ.uid.uid64), self.user_profile["id"],
+                attacker_count=len(forced), attacker_uids=list(forced))
+        bstate.pop("forced_attackers", None)
+        save_state(session, bstate)
+        port.has_forced_attackers = False
+
+    def _auto_declare_force_attackers(self, session, pl_t, ai_t, bstate, game):
+        """Declare the player's ready "Must attack" troops (C# OnExit).
+
+        Runs when the DeclareAttack phase ends, after the player committed
+        (or skipped) their own attackers, like C# ``DeclareAttackState``.
+        The combat listing (all player attackers) is pushed before the
+        "when this attacks" triggers, so a trigger's target prompt is the
+        last thing the client receives and is not replaced by the listing.
+        Returns the newly declared attacker UIDs.
+        """
+        _be = self._checkpoint_engine(session)
+        from pvp_db import db_card_state_value as db_card_state_raw
+        from rules_port.static_rules import effective_attributes
+        ai_champ_uid = getattr(self, "_ai_champ_scid", None)
+        ai_champ_uid64 = ai_champ_uid.uid.to_uint64() if ai_champ_uid else 0
+        attackers = {int(k): int(v)
+                     for k, v in (bstate.get("player_attackers") or {}).items()}
+        forced = self._ready_force_attackers(session, bstate)
+        port = getattr(session, "_rules_port_session", None)
+        for u in forced:
+            attrs = int(effective_attributes(
+                _db, session.session_id, bstate, u) or 0)
             attackers[u] = int(ai_champ_uid64)
             scid = game_engine.SessionCardId(game_engine.UID(u))
             combat_id = game_engine.CombatId(pl_t, u & 0xFFFF)
-            port = getattr(session, "_rules_port_session", None)
             if port is not None:
                 # ForceAttack declarations must exist in the same native
-                # CombatManager as ordinary client declarations.  The event
-                # projection below is not a second combat authority.
+                # CombatManager as ordinary client declarations.
                 port_attacker = port.get_card(u) or u
                 port_defender = (port.get_card(ai_champ_uid64)
                                  if ai_champ_uid64 else None)
-                port_combat = port.combat_manager.create_attack(
-                    combat_id, pl_t, port_defender or ai_champ_uid64)
-                port_combat.declare_attacker(port_attacker)
+                if port.combat_manager.combat_for_attacker(
+                        port_attacker) is None:
+                    port_combat = port.combat_manager.create_attack(
+                        combat_id, pl_t, port_defender or ai_champ_uid64)
+                    port_combat.declare_attacker(port_attacker)
             game.push_attack_declared(
                 combat_id, pl_t,
                 ai_champ_uid or game_engine.SessionCardId(ai_t), scid)
@@ -8289,32 +8338,39 @@ class HCPHandler(ProfileStreamMixin):
                 self._dispatch_game_trigger(
                     game, session, pl_t, ai_t, bstate, "CardTappedEvent", u,
                     self.user_profile["id"])
+        if not forced:
+            return []
+        bstate["player_attackers"] = {
+            str(k): str(v) for k, v in attackers.items()}
+        bstate.pop("forced_attackers", None)
+        _be.save_state(session, bstate)
+        combats = []
+        for u in attackers:
             cs = game_engine.CombatSessionEventArgs()
             cs.player_id = pl_t
-            cs.id = combat_id
-            cs.attacker = scid
+            cs.id = game_engine.CombatId(pl_t, u & 0xFFFF)
+            cs.attacker = game_engine.SessionCardId(game_engine.UID(u))
             cs.blockers = []
             combats.append(cs)
-            # Fire "when this attacks" triggers (e.g. Chimera Guard Outrider).
+        game.push_combat_listing(pl_t, combats)
+        from rules_port.combat_effects import apply_rage
+        from rules_port.context import EffectContext
+        for u in forced:
+            # Fire "when this attacks" triggers (e.g. Veteran Gladiator's
+            # "target opposing troop can't block this turn").
             self._dispatch_game_trigger(
                 game, session, pl_t, ai_t, bstate, "CardAttackedEvent", u,
                 self.user_profile["id"])
             self._dispatch_game_trigger(
                 game, session, pl_t, ai_t, bstate,
                 "CardAttackedOrBlockedEvent", u, self.user_profile["id"])
-            from rules_port.combat_effects import apply_rage
-            from rules_port.context import EffectContext
             apply_rage(EffectContext.from_rules_port(
                 game, session, _db, self, pl_t, ai_t, bstate,
                 "", ability=None), u)
-        if combats:
-            bstate["player_attackers"] = {
-                str(k): str(v) for k, v in attackers.items()}
-            _be.save_state(session, bstate)
-            game.push_combat_listing(pl_t, combats)
-            log_req(f"    Auto-declared {len(combats)} ForceAttack attacker(s): "
-                    f"{[hex(c.attacker.uid.uid64) for c in combats]}")
-        return combats
+        _be.save_state(session, bstate)
+        log_req(f"    Declared {len(forced)} ForceAttack attacker(s) on "
+                f"DeclareAttack exit: {[hex(u) for u in forced]}")
+        return forced
 
     def _push_blocker_options(self, session, pl_t, ai_t):
         """Push a PlayerOptionList enabling the player to declare blockers during

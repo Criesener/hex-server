@@ -1050,6 +1050,70 @@ def test_speed_troop_can_attack_same_turn(db):
         dbmod._db = old_db
 
 
+def test_must_attack_troop_joins_on_declare_attack_exit(db):
+    """Issue #6 (Veteran Gladiator): a "Must attack" troop is not declared
+    when DeclareAttack opens, so every ready troop stays selectable; it joins
+    the attack on phase exit and its attack triggers fire after the combat
+    listing, so their target prompt is not replaced by the listing."""
+    import hconnect_server as hcs
+    import db as dbmod
+    old_hcs_db, old_db = hcs._db, dbmod._db
+    hcs._db = dbmod._db = db
+    captured, order = [], []
+    try:
+        db.execute(
+            "INSERT INTO card_templates (guid, name, card_type, cost, attack, defense, attributes, abilities_json, threshold_json, subtype) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (TPL_FORCE := "55555555-5555-5555-5555-555555555555",
+             "Veteran Gladiator", "Troop", 3, 3, 3,
+             int(game_engine.ECardAttributes.ForceAttack), "[]", "[]", ""))
+        db.execute(
+            "INSERT INTO card_templates (guid, name, card_type, cost, attack, defense, attributes, abilities_json, threshold_json, subtype) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (TPL_PLAIN := "44444444-4444-4444-4444-444444444444",
+             "Arena Regular", "Troop", 2, 1, 5, 0, "[]", "[]", ""))
+        ready = game_engine.ECardStates.StartedATurnOnYourSide
+        add_card(db, 301, 5, TPL_FORCE, state=ready)
+        add_card(db, 302, 5, TPL_PLAIN, state=ready)
+        h = object.__new__(hcs.HCPHandler)
+        h.user_profile = {"id": 5}
+        h.client_reck_id = 5
+        h._player_champ_scid = game_engine.SessionCardId(
+            game_engine.UID.make(244, 5))
+        h._ai_champ_scid = game_engine.SessionCardId(
+            game_engine.UID.make(3, 1000))
+        h._maybe_attach_rules_port = lambda *args, **kwargs: None
+        h._send_battle_events = lambda s, g, pl_t: captured.append(g)
+        pl_t = game_engine.UID.make(244, 5)
+        ai_t = game_engine.UID.make(3, 1000)
+        session = SessionStub()
+        h._push_attack_options(session, pl_t, ai_t)
+        names = [ev.__class__.__name__ for ev in captured[-1].events]
+        assert "AttackDeclaredSessionEventArgs" not in names, names
+        offered = {int(opt.card.uid.uid64) for ev in captured[-1].events
+                   if ev.__class__.__name__ == "PlayerOptionListSessionEventArgs"
+                   for opt in ev.options}
+        assert {301, 302} <= offered, offered
+        bstate = h._checkpoint_engine(session).load_state(session)
+        assert bstate.get("forced_attackers") == [301], bstate
+
+        game = game_engine.Game(1, pl_t, ai_t)
+
+        def dispatch(g, _s, _pl, _ai, _bs, event_type, uid, *_a, **_k):
+            order.append((event_type, uid, [e.__class__.__name__
+                                            for e in g.events]))
+        h._dispatch_game_trigger = dispatch
+        h._card_full_data = lambda *args, **kwargs: None
+        forced = h._auto_declare_force_attackers(session, pl_t, ai_t,
+                                                 bstate, game)
+        assert forced == [301], forced
+        attacked = [names for event_type, uid, names in order
+                    if event_type == "CardAttackedEvent"]
+        assert attacked and "CombatListingSessionEventArgs" in attacked[0], order
+        assert "301" in bstate["player_attackers"], bstate
+        assert "forced_attackers" not in bstate
+    finally:
+        hcs._db = old_hcs_db
+        dbmod._db = old_db
+
 def test_ragefire_escalation_damage(db):
     """Ragefire ("Deal ESC:2 damage", Escalation) deals 2 to a targeted
     champion on the first cast, increments same-name card instances, then a
@@ -2346,6 +2410,8 @@ def main():
          test_transform_bom_applies_bone_warrior),
         ("Poca summons Blaze Elemental", test_poca_summons_blaze_elemental),
         ("Speed troop attacks same turn", test_speed_troop_can_attack_same_turn),
+        ("Must attack troop joins on DeclareAttack exit",
+         test_must_attack_troop_joins_on_declare_attack_exit),
         ("Ragefire escalation damage", test_ragefire_escalation_damage),
         ("AI discards to 7", test_ai_discard_down_to_seven),
         ("X-cost detection + damage", test_x_cost_detection_and_damage),
