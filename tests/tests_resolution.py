@@ -658,6 +658,28 @@ def test_hand_discard_child_asks_the_controller_and_discards_on_resume(db):
                for ev in game.events)
 
 
+def test_answered_discard_clears_the_parent_pending_activation(db):
+    """Bloatcap: the native pending activation names the Deathcry parent.
+
+    Answering the child's discard picker left it set, so every later main
+    phase saw "waiting for input" and offered no playable cards.
+    """
+    import hconnect_server
+    deathcry = "50a8dcb6-5733-c2d0-824b-943199bef45f"
+    port = SimpleNamespace(persist=lambda: None, pending_activation={
+        "ability_instance_id": 4, "responsible_player_id": 0,
+        "continuation": {"ability_instance_id": 4, "ability_guid": deathcry}})
+    session = SimpleNamespace(_rules_port_session=port)
+    hconnect_server._clear_answered_port_activation(session, {
+        "instance_id": 7, "ability_guid": "06570445-27e3-fc87-2e17-a7b5e1de693d",
+        "parent": {"ability_instance_id": 4, "ability_guid": deathcry}})
+    assert port.pending_activation is None
+    other = {"ability_instance_id": 9, "continuation": {"ability_guid": "x"}}
+    port.pending_activation = dict(other)
+    hconnect_server._clear_answered_port_activation(
+        session, {"instance_id": 7, "ability_guid": "y"})
+    assert port.pending_activation == other
+
 def test_native_deck_target_opens_the_deck_search_picker(db):
     """Scheme's "choose an action in your deck" must offer real candidates.
 
@@ -917,6 +939,8 @@ def main():
          test_native_choice_target_opens_one_picker_for_all_options),
         ("Hand discard asks then discards on resume",
          test_hand_discard_child_asks_the_controller_and_discards_on_resume),
+        ("Answered discard clears the parent pending activation",
+         test_answered_discard_clears_the_parent_pending_activation),
         ("Native deck target opens the deck-search picker",
          test_native_deck_target_opens_the_deck_search_picker),
         ("Native deck target AI auto-selects",

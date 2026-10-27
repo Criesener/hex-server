@@ -643,6 +643,34 @@ def _generate_chest_rewards(chest, card_templates, rng=None):
     return list(cards), []
 
 
+def _clear_answered_port_activation(session, continuation):
+    """Drop the native pending activation a picker answer just finished.
+
+    A discard picker opened by a nested ability (Bloatcap's Deathcry runs
+    DiscardACard as a child) records the parent as the port's pending
+    activation; the child-level clear in resolve_port_ability never matches
+    it, so the stale prompt kept every later main phase waiting for input.
+    """
+    port = getattr(session, "_rules_port_session", None)
+    pending = getattr(port, "pending_activation", None)
+    if not isinstance(pending, dict):
+        return
+    answered, answered_guids = set(), set()
+    cursor = continuation
+    while isinstance(cursor, dict):
+        for key in ("ability_instance_id", "instance_id"):
+            if cursor.get(key) is not None:
+                answered.add(int(cursor[key]))
+        answered_guids.add(str(cursor.get("ability_guid") or "").lower())
+        cursor = cursor.get("parent")
+    pending_guid = str((pending.get("continuation") or {}).get(
+        "ability_guid") or "").lower()
+    if (int(pending.get("ability_instance_id", -1)) in answered
+            or (pending_guid and pending_guid in answered_guids)):
+        port.pending_activation = None
+        port.persist()
+
+
 def _grant_pack_inventory_rewards(handler, inventory_rewards):
     """Persist and coalesce equipment/Stardust pack rewards.
 
@@ -7000,6 +7028,8 @@ class HCPHandler(ProfileStreamMixin):
             resume_ability_continuation_parents(
                 self, game, session, _db, pl_t, ai_t, state,
                 native_continuation)
+            if not state.get("resolution_paused"):
+                _clear_answered_port_activation(session, native_continuation)
             _be.save_state(session, state)
             completed_chain = self._completed_rules_port_chain(session, state)
             if completed_chain is None and not state.get("resolution_paused"):
@@ -12283,6 +12313,10 @@ class HCPHandler(ProfileStreamMixin):
                     # The login stream already delivered the collection; a
                     # CardsAdded push would mark every card "New".
                     self.push_cards_to_client(seed_only=True)
+                    from services.daily_login import grant_daily_login_cards
+                    if grant_daily_login_cards(_db, self.user_profile["id"]):
+                        _db.commit()
+                        self.push_cards_to_client()
 
             # On first routed message, push social data (friend list etc.)
             if getattr(self, '_social_pending', False) and self.user_profile:
