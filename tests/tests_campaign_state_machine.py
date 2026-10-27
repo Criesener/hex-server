@@ -1689,6 +1689,43 @@ def test_tamed_capture_pushes_the_quest_progress():
         os.unlink(path)
 
 
+
+def test_campaign_game_end_cleans_up_once():
+    """Issue #8: the campaign game end raised NameError before cleaning the
+    session, so a second result pass re-ran the Crayburn step and finished
+    the dungeon behind the victory conversation."""
+    import pvp_db
+    db, path = cloned_db()
+    saved = {name: getattr(campaign, name) for name in (
+        "_apply_encounter_end_rewards", "push_gameendnotify",
+        "push_campupdate", "advance_crayburn_step")}
+    saved_identity = campaign.pve_db.db_campaign_identity_state
+    saved_delete = pvp_db.db_delete_game_session
+    deleted, advanced = [], []
+    try:
+        campaign._apply_encounter_end_rewards = lambda *a, **k: {
+            "applied": True, "scene_guid": ""}
+        campaign.push_gameendnotify = lambda *a, **k: None
+        campaign.push_campupdate = lambda *a, **k: None
+        campaign.advance_crayburn_step = lambda *a, **k: advanced.append(a)
+        campaign.pve_db.db_campaign_identity_state = \
+            lambda camp_id, conn=None: (6,)
+        pvp_db.db_delete_game_session = lambda sid, *a, **k: deleted.append(sid)
+        handler = SimpleNamespace(_log_req=lambda *_a: None,
+                                  user_profile={"id": 1})
+        session = SimpleNamespace(session_name="camp_99", session_id=42)
+        assert campaign.handle_battle_gameend(handler, db, session, True, 0)
+        assert campaign.handle_battle_gameend(handler, db, session, True, 0)
+        assert deleted == [42], deleted
+        assert len(advanced) == 1, advanced
+    finally:
+        for name, value in saved.items():
+            setattr(campaign, name, value)
+        campaign.pve_db.db_campaign_identity_state = saved_identity
+        pvp_db.db_delete_game_session = saved_delete
+        db.close()
+        os.unlink(path)
+
 if __name__ == "__main__":
     tests = [
         test_cross_zila_objective_is_linked_to_savage_lord,
@@ -1724,6 +1761,7 @@ if __name__ == "__main__":
         test_dungeon_win_count_tracks_streak_for_pregame_talents,
         test_post_crayburn_report_opens_the_az1_transition,
         test_tamed_capture_pushes_the_quest_progress,
+        test_campaign_game_end_cleans_up_once,
     ]
     for test in tests:
         test()

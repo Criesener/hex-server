@@ -6741,6 +6741,18 @@ def handle_battle_gameend(handler, db, session, won, service_mail_uid,
                 return bool(prepared.get("handled"))
             return False
         camp_id = int(session_name[5:])
+        # A finished battle can report its result twice (combat damage and
+        # the champion-health check).  The second pass re-ran the Crayburn
+        # step and finished the dungeon behind the victory conversation, so
+        # the client stayed on the castle map (issue #8).
+        handled = getattr(handler, "_gameend_handled_sessions", None)
+        if handled is None:
+            handled = handler._gameend_handled_sessions = set()
+        if session.session_id in handled:
+            getattr(handler, "_log_req", print)(
+                f"    Campaign {camp_id}: game end already handled")
+            return True
+        handled.add(session.session_id)
         reward_result = _apply_encounter_end_rewards(
             handler, db, session, camp_id, won)
         advanced_quest_states = []
@@ -6783,6 +6795,7 @@ def handle_battle_gameend(handler, db, session, won, service_mail_uid,
         except Exception as exc:
             getattr(handler, "_log_req", print)(
                 f"    Crayburn advance failed: {exc}")
+        from pvp_db import db_delete_game_session
         db_delete_game_session(session.session_id)
         getattr(handler, "_log_req", print)(
             "    PvE game session and game cards cleaned")
