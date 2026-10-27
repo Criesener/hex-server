@@ -92,6 +92,18 @@ class ProfileStreamMixin:
         # The single List<FlagData>: Reckoning account flags, including the
         # mercenary party cap (CAMP_PARTYCAP).
         self._push_reckoning_flags_stream(p)
+        # Account level: grant level-up sleeves before the inventory list is
+        # built, then send the AccountXpCap the account window reads.
+        from services import account_xp
+        level_sync = account_xp.sync_level(_db, p["id"])
+        _db.commit()
+        account_level = level_sync["level"] if level_sync else 1
+        if level_sync:
+            p["experience"] = level_sync["xp"]
+            p["level"] = account_level
+        self._push_profile_stream_object(
+            account_xp.encode_cap_info(account_level),
+            f"AccountXpCap (level {account_level})")
 
         now_str = time.strftime("%m/%d/%Y %H:%M:%S", time.gmtime())
         
@@ -260,9 +272,10 @@ class ProfileStreamMixin:
               ("LastDisconnect", "datetime", now_str),
               ("AITournamentFlags", "ulong", 0),
               ("CanDisableProfanityFilter", "bool", True),
-              ("Level",      "int",     1),
+              ("Level",      "int",     account_level),
               ("XpGainTimer","datetime", now_str),
-              ("XpGain",     "int",     p.get("daily_bonus_xp", 0)),
+              # XP gained in the current cap period; no cap on this server.
+              ("XpGain",     "int",     0),
               ("ProfileId",  "ulong",   int(self.client_auth_id))]
         )
         log(f">>> reck raw ({len(reck)}b) hex={hexlify(reck[:200]).decode()}...")
@@ -832,6 +845,41 @@ class ProfileStreamMixin:
             db_set_inventory_client_uid(
                 self.user_profile["id"], template_guid, item_id, conn=_db)
             _db.commit()
+
+    def push_account_xp(self):
+        """Sync the account level (granting level-up sleeves) and push it."""
+        if not self.user_profile:
+            return
+        from services import account_xp
+        result = account_xp.sync_level(_db, self.user_profile["id"])
+        _db.commit()
+        if not result:
+            return
+        self.user_profile["experience"] = result["xp"]
+        self.user_profile["level"] = result["level"]
+        for template_guid, item_uid, quantity in result["inventory_updates"]:
+            self.push_inventory_to_client(
+                qty=quantity, template_guid=template_guid, item_id=item_uid)
+        args = encode_objfmt_response(
+            ["Game.Shared.Network.Profile.ProfileGenericUpdateEventArgs",
+             "Game.Shared.ProfileGenericMessage", "System.Byte[]"],
+            [("Message", "struct", ("Game.Shared.ProfileGenericMessage", [
+                ("Data", "bytes", account_xp.encode_account_update(
+                    result["xp"], result["level"]))]))]
+        )
+        dw = encode_datawrapper(
+            0, 2211, compress_gzip(args), 1,
+            "00000000-0000-0000-0000-000000000000")
+        issuer = (
+            f"0.0.0.0.ServiceProfile.{SERVICE_PROFILE_UID}.ServicePlayer."
+            f"{self.client_uid}.{self.scnt}")
+        self.scnt += 1
+        self.send({
+            "issuer": issuer, "target": "ServiceProfile", "instance": "Shared",
+            "reqid": 0, "c": 0, "conh": 0, "sid": self.sid,
+        }, dw)
+        log_req(f">>> PUSH AccountUpdate (dt=2211) xp={result['xp']} "
+                f"level={result['level']}")
 
     def push_currency_to_client(self, gold_delta=0, platinum_delta=0):
         """Push an atomic profile currency delta through the generic stream."""

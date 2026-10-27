@@ -640,6 +640,7 @@ def _db_record_arena_fight(user_id, won, conn=None, return_details=False,
     recorded = False
     reward_guid = ""
     tier_one_perfect_flag_awarded = False
+    account_xp_awarded = 0
     losses = int(arena.get("losses", 0) or 0)
     challenger = challengers[index]
     is_boss = str(challenger.get("boss", "False")).lower() == "true"
@@ -679,6 +680,10 @@ def _db_record_arena_fight(user_id, won, conn=None, return_details=False,
             gold += index // 5 + 1
             if is_boss:
                 chests += 1
+                # Beating a tier boss completes the tier (issue #4).
+                from services import account_xp
+                account_xp_awarded = account_xp.award(
+                    connection, user_id, account_xp.config()["fra_tier_xp"])
 
             # A lossless tier can restore one prior strike, but only when the
             # run was below the three-loss cap.  This is the higher-priority
@@ -744,7 +749,8 @@ def _db_record_arena_fight(user_id, won, conn=None, return_details=False,
         return {"recorded": recorded,
                 "reward_conversation_guid": reward_guid,
                 "tier_one_perfect_flag_awarded":
-                    tier_one_perfect_flag_awarded}
+                    tier_one_perfect_flag_awarded,
+                "account_xp_awarded": account_xp_awarded}
     return True
 
 

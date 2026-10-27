@@ -1,0 +1,8 @@
+{
+  "_doc": "Account level progression (issue #4). thresholds[i] is the total account XP needed for level i+1; it reuses the champion XP table. Beyond the table every level costs step_after_table more XP. Each level-up grants one random deck sleeve the player does not own yet.",
+  "thresholds": [0, 1000, 2800, 5000, 8000, 12000, 17500, 25000, 40000, 50000, 60000, 70000, 80000, 92000, 110000],
+  "step_after_table": 20000,
+  "fra_tier_xp": 500,
+  "daily_login_xp": 100,
+  "excluded_sleeves": ["c508cdd3-77ad-4dbf-b1b4-b201eae5a690"]
+}

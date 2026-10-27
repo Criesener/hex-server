@@ -88,7 +88,8 @@ def db_get_or_create_user(name, steam_id=None, conn=None):
         new_xp = _row_value(row, "experience", 4)
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if old_last_login and str(old_last_login)[:10] != today:
-            daily_bonus_xp = 100
+            from services.account_xp import config as _account_xp_config
+            daily_bonus_xp = int(_account_xp_config()["daily_login_xp"])
             new_xp = (_row_value(row, "experience", 4) or 0) + daily_bonus_xp
             connection.execute(
                 "UPDATE users SET experience=?, last_login=datetime('now'), "

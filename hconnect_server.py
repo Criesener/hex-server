@@ -16016,6 +16016,12 @@ class HCPHandler(ProfileStreamMixin):
                 from services.deck_templates import handle_profile_action
                 template_envelope = handle_profile_action(
                     _db, self.user_profile["id"], env_json)
+            if (isinstance(env_json, dict) and self.user_profile and
+                    env_json.get("action") == "acctxpget"):
+                from services import account_xp
+                template_envelope = account_xp.state_response(
+                    _db, self.user_profile["id"],
+                    int(self.user_profile.get("level") or 1))
             if isinstance(env_json, dict) and env_json.get("action") == "qreplaylst":
                 from replay import replay_list
                 resp_envelope = json.dumps(

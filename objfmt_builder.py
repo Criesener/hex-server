@@ -88,6 +88,15 @@ class ObjFmtBuilder:
         self._w(hexlify(struct.pack("<i", val)).decode("ascii")); self._sep()
         self._set_size(idx, start)
 
+    def field_float(self, name, val):
+        start = self._buf.tell()
+        idx = self._push_size()
+        t = self._add_type("System.Single")
+        self._w(name); self._sep(); self._w(str(idx)); self._sep()
+        self._w(str(t)); self._sep(); self._w("0"); self._sep()
+        self._w(hexlify(struct.pack("<f", val)).decode("ascii")); self._sep()
+        self._set_size(idx, start)
+
     def field_ulong(self, name, val):
         start = self._buf.tell()
         idx = self._push_size()

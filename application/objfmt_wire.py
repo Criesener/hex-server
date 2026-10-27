@@ -73,6 +73,8 @@ def parse_datawrapper(body, *, preserve_complex=False):
             return name, struct.unpack("<Q", unhexlify(read_to_sep()))[0]
         elif f_type == "System.Int32" and num == 0:
             return name, struct.unpack("<i", unhexlify(read_to_sep()))[0]
+        elif f_type == "System.Single" and num == 0:
+            return name, struct.unpack("<f", unhexlify(read_to_sep()))[0]
         elif f_type == "System.Byte" and num == 0:
             return name, int(read_to_sep(), 16)
         elif f_type == "System.Byte[]" and num == 0:
@@ -86,7 +88,7 @@ def parse_datawrapper(body, *, preserve_complex=False):
             val = body[idx:idx+guid_len].decode("utf-8")
             idx += guid_len
             return name, val
-        elif f_type == "System.String" and num == 0:
+        elif f_type in ("System.String", "System.DateTime") and num == 0:
             str_len = int(read_to_sep())
             val = body[idx:idx+str_len].decode("utf-8")
             idx += str_len

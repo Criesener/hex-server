@@ -4289,7 +4289,15 @@ def _push_fra_buff_conversation(handler, conversation_guid, service_mail_uid):
 # Request handlers
 # ---------------------------------------------------------------------------
 
-def handle_campaign_request(handler, _db, inner_obj, comp, session_id, reqid,
+def handle_campaign_request(handler, *args, **kwargs):
+    """Handle one campaign request, then push any account XP it awarded."""
+    try:
+        return _handle_campaign_request(handler, *args, **kwargs)
+    finally:
+        push_pending_account_xp(handler)
+
+
+def _handle_campaign_request(handler, _db, inner_obj, comp, session_id, reqid,
                              target, instance, conh, service_mail_uid):
     """Entry point for ServiceCampaign (dt=110000) requests.
 
@@ -6040,6 +6048,27 @@ def _grant_card_reward(handler, db, user_id, template_guid, quantity=1,
     return granted
 
 
+def _award_account_xp(handler, db, user_id, xp):
+    """Add account XP now; the level sync and push follow the request."""
+    from services import account_xp
+    if account_xp.award(db, user_id, xp) and handler is not None:
+        handler._account_xp_pending = True
+
+
+def push_pending_account_xp(handler):
+    """Level up (granting sleeves) and push account XP after a reward."""
+    if not getattr(handler, "_account_xp_pending", False):
+        return
+    handler._account_xp_pending = False
+    push = getattr(handler, "push_account_xp", None)
+    if callable(push):
+        try:
+            push()
+        except Exception as exc:
+            getattr(handler, "_log_req", print)(
+                f"    Account XP push failed: {exc}")
+
+
 def _apply_conversation_rewards(handler, db, camp_id, state,
                                 conversation_guid):
     """Apply a conversation's authored reward and return AppliedUpdates.
@@ -6101,6 +6130,8 @@ def _apply_conversation_rewards(handler, db, camp_id, state,
         })
 
     if xp:
+        # Campaign XP also counts as account XP (issue #4).
+        _award_account_xp(handler, db, user_id, xp)
         crow = db_champion_reward_profile(champ_id, conn=db)
         if crow:
             new_xp = int(crow[3] or 0) + xp
@@ -6576,6 +6607,7 @@ def _apply_encounter_end_rewards(handler, db, session, camp_id, won):
 
     champion_bits = None
     if total_xp:
+        _award_account_xp(handler, db, player_user_id, total_xp)
         crow = db_champion_reward_profile(champion_id, conn=db)
         if crow:
             new_xp = int(crow[3] or 0) + total_xp
@@ -6690,6 +6722,8 @@ def prepare_fra_battle_gameend(handler, db, session, won):
         result = db_record_arena_fight(
             profile["id"], won, return_details=True,
             session_id=session.session_id)
+        if isinstance(result, dict) and result.get("account_xp_awarded"):
+            handler._account_xp_pending = True
         db_delete_game_session(session.session_id)
         return {"handled": True, "result": result}
     except Exception as exc:
@@ -6717,6 +6751,7 @@ def publish_fra_battle_gameend(handler, prepared, service_mail_uid):
         except Exception as exc:
             getattr(handler, "_log_req", print)(
                 f"    Could not send FRA reward conversation: {exc}")
+    push_pending_account_xp(handler)
     return True
 
 
@@ -6799,6 +6834,7 @@ def handle_battle_gameend(handler, db, session, won, service_mail_uid,
         db_delete_game_session(session.session_id)
         getattr(handler, "_log_req", print)(
             "    PvE game session and game cards cleaned")
+        push_pending_account_xp(handler)
         return True
     except Exception as exc:
         getattr(handler, "_log_req", print)(
