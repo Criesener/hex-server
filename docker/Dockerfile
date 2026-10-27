@@ -24,6 +24,7 @@ RUN python3 -m pip install --no-cache-dir -r /hex/requirements.txt
 # Server sources and data.  The build context is the repository root even
 # though this Dockerfile lives under docker/.
 COPY *.py /hex/
+COPY redeem_bundles.json /hex/redeem_bundles.json
 COPY AssetExtraction/ /hex/AssetExtraction/
 COPY abilities/ /hex/abilities/
 COPY application/ /hex/application/

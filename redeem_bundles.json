@@ -1,0 +1,144 @@
+{
+  "_doc": "Redeem-code bundles (RedeemCode, ServiceEscrow 6013). Each player can redeem each code once. 'includes' merges other bundles: lists are unioned, counts take the maximum, so a tier that includes the tier below keeps its own totals. Kickstarter tiers follow the 2013 HEX Kickstarter rewards page; only in-game contents are modeled.",
+  "KS-SUPPORTER": {
+    "title": "Kickstarter Supporter Tier"
+  },
+  "KS-SQUIRE": {
+    "title": "Kickstarter Squire Tier",
+    "boosters": {"Shards of Fate": 10},
+    "starter_decks": ["Human", "Orc"],
+    "cards": [
+      {"name": "Lady Cassandra", "guid": "abd634cb-d56e-43f5-9344-5cefbbcb19e8"}
+    ],
+    "items": ["Million Dollar Deck Sleeve"]
+  },
+  "KS-WARRIOR": {
+    "title": "Kickstarter Warrior Tier",
+    "includes": ["KS-SQUIRE"],
+    "boosters": {"Shards of Fate": 25},
+    "starter_decks": ["Human", "Orc", "Dwarf"],
+    "cards": [
+      {"name": "Replicator's Gambit (Kickstarter alternate art)", "guid": "95e3096e-15fa-4bff-a3af-a44df6dc7c2c"},
+      {"name": "Slithering Marauder (Void Marauder)", "guid": "36097418-d845-44b7-910d-16f79f17e459"}
+    ],
+    "items": ["Zoltog", "Warrior Sleeve"]
+  },
+  "KS-CAPTAIN": {
+    "title": "Kickstarter Captain Tier",
+    "includes": ["KS-WARRIOR"],
+    "boosters": {"Shards of Fate": 40},
+    "starter_decks": ["Human", "Orc", "Dwarf", "Elf"],
+    "cards": [
+      {"name": "Princess Victoria (Kickstarter alternate art)", "guid": "c87b17fc-f80b-48b7-9314-3646b9cbcc34"},
+      {"name": "Prospero, Sylvan Enchanter", "guid": "44f75ecb-0d9c-4b79-b84d-e8eab190648c"}
+    ],
+    "items": ["Burgamot Ebonrock", "Captain Deck Sleeve"]
+  },
+  "KS-KNIGHT": {
+    "title": "Kickstarter Knight Tier",
+    "includes": ["KS-CAPTAIN"],
+    "boosters": {"Shards of Fate": 60},
+    "cards": [
+      {"name": "Extinction (Kickstarter alternate art)", "guid": "9e7ac16c-5f12-4148-a5a1-0bbf67db2ccd"},
+      {"name": "Darad, the Scourgeblade (Scourge Knight)", "guid": "abadad68-7350-49f8-bf98-3434a2171c0e"}
+    ],
+    "items": ["Mooof", "Knight Sleeve"]
+  },
+  "KS-CHAMPION": {
+    "title": "Kickstarter Champion Tier",
+    "includes": ["KS-KNIGHT"],
+    "boosters": {"Shards of Fate": 85},
+    "cards": [
+      {"name": "Ragefire (Kickstarter alternate art)", "guid": "ebe97d0d-97bd-46f4-bab4-e22783167a09"},
+      {"name": "The Wrath of Zakiir", "guid": "9d8c42f9-bc5a-4a42-b904-0f98ae83945e"}
+    ],
+    "items": ["Mephistophelius", "Champion Deck Sleeve"]
+  },
+  "KS-KING": {
+    "title": "Kickstarter King Tier",
+    "includes": ["KS-CHAMPION"],
+    "boosters": {"Shards of Fate": 150},
+    "cards": [
+      {"name": "Pack Raptor (Kickstarter alternate art)", "guid": "ebb25772-3156-4a99-b8f5-806314f966ed"},
+      {"name": "Spectral Oak (Spectral Lotus Garden)", "guid": "79ba006b-5fae-44f2-b5f5-024c5d73a3b0"}
+    ],
+    "items": ["Monkey of the Nine Tails", "King Sleeve"]
+  },
+  "KS-COLLECTOR": {
+    "title": "Kickstarter Collector Tier",
+    "includes": ["KS-KING"],
+    "cards": [
+      {"name": "Lady Cassandra", "guid": "abd634cb-d56e-43f5-9344-5cefbbcb19e8", "qty": 2},
+      {"name": "Replicator's Gambit (Kickstarter alternate art)", "guid": "95e3096e-15fa-4bff-a3af-a44df6dc7c2c", "qty": 2},
+      {"name": "Slithering Marauder (Void Marauder)", "guid": "36097418-d845-44b7-910d-16f79f17e459", "qty": 2},
+      {"name": "Princess Victoria (Kickstarter alternate art)", "guid": "c87b17fc-f80b-48b7-9314-3646b9cbcc34", "qty": 2},
+      {"name": "Prospero, Sylvan Enchanter", "guid": "44f75ecb-0d9c-4b79-b84d-e8eab190648c", "qty": 2},
+      {"name": "Extinction (Kickstarter alternate art)", "guid": "9e7ac16c-5f12-4148-a5a1-0bbf67db2ccd", "qty": 2},
+      {"name": "Darad, the Scourgeblade (Scourge Knight)", "guid": "abadad68-7350-49f8-bf98-3434a2171c0e", "qty": 2},
+      {"name": "Ragefire (Kickstarter alternate art)", "guid": "ebe97d0d-97bd-46f4-bab4-e22783167a09", "qty": 2},
+      {"name": "The Wrath of Zakiir", "guid": "9d8c42f9-bc5a-4a42-b904-0f98ae83945e", "qty": 2},
+      {"name": "Pack Raptor (Kickstarter alternate art)", "guid": "ebb25772-3156-4a99-b8f5-806314f966ed", "qty": 2},
+      {"name": "Spectral Oak (Spectral Lotus Garden)", "guid": "79ba006b-5fae-44f2-b5f5-024c5d73a3b0", "qty": 2}
+    ],
+    "items": ["Collector Deck Sleeve"]
+  },
+  "KS-RAIDLEADER": {
+    "title": "Kickstarter Raid Leader Tier",
+    "includes": ["KS-KING"],
+    "items": ["Raid Leader Sleeve"]
+  },
+  "KS-DUNGEONCRAWLER": {
+    "title": "Kickstarter Dungeon Crawler Tier",
+    "includes": ["KS-KING"],
+    "random_equipment": {"set": "Shards of Fate", "rarities": ["Rare", "Legendary"], "count": 20},
+    "items": ["Dungeon Crawler Deck Sleeve"]
+  },
+  "KS-GUILDMASTER": {
+    "title": "Kickstarter Guild Master Tier",
+    "includes": ["KS-KING"],
+    "items": ["Guild Master Sleeve"],
+    "gift_codes": ["KS-GUILDGIFT"]
+  },
+  "KS-GUILDGIFT": {
+    "title": "Kickstarter Guild Master gift",
+    "boosters": {"Shards of Fate": 30}
+  },
+  "KS-PROPLAYER": {
+    "title": "Kickstarter Pro Player Tier",
+    "includes": ["KS-KING"],
+    "items": ["Pro-Player Sleeve"]
+  },
+  "KS-GRANDKING": {
+    "title": "Kickstarter Grand King Tier",
+    "includes": ["KS-COLLECTOR", "KS-RAIDLEADER", "KS-DUNGEONCRAWLER", "KS-GUILDMASTER", "KS-PROPLAYER"],
+    "items": ["Grand King Deck Sleeve"]
+  },
+  "KS-DRAGONLORD": {
+    "title": "Kickstarter Dragon Lord Tier",
+    "includes": ["KS-GRANDKING"],
+    "all_cards": 1,
+    "items": ["Dragon Lord Deck Sleeve"]
+  },
+  "KS-PRIMAL": {
+    "title": "Kickstarter Primal Tier",
+    "includes": ["KS-GRANDKING"],
+    "all_cards": 4,
+    "items": ["Primal Deck Sleeve"]
+  },
+  "KS-IMMORTAL": {
+    "title": "Kickstarter Immortal Tier",
+    "includes": ["KS-GRANDKING"],
+    "all_cards": 4,
+    "all_equipment": true,
+    "items": ["Immortal Sleeve"]
+  },
+  "KS-PRODUCER": {
+    "title": "Kickstarter Producer Tier",
+    "includes": ["KS-IMMORTAL"],
+    "items": ["Producer Deck Sleeve"]
+  },
+  "KS-EXTRA-MERCS": {
+    "title": "Kickstarter mercenaries outside the pledge tiers",
+    "items": ["Aethynia", "B.E.B.O.", "Cardboard Tube Samurai", "Glorfenblort"]
+  }
+}

@@ -433,6 +433,22 @@ DDL = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS redeem_code_claims (
+        user_id INTEGER NOT NULL,
+        code TEXT NOT NULL,
+        claimed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, code)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS daily_login_grants (
+        user_id INTEGER NOT NULL,
+        grant_key TEXT NOT NULL,
+        last_date TEXT NOT NULL,
+        PRIMARY KEY (user_id, grant_key)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS encounter_scenes (
         guid TEXT PRIMARY KEY,
         name TEXT,

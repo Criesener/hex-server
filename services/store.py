@@ -223,6 +223,9 @@ def apply_purchase(conn, user_id, item_id, quantity):
 
 def apply_redeem(conn, user_id, redeem_code):
     """Apply a redemption and its system email in one transaction."""
+    from services import redeem_bundles
+    if redeem_bundles.is_bundle_code(redeem_code):
+        return _apply_bundle_redeem(conn, user_id, redeem_code)
     result = db_redeem_code(redeem_code, conn=conn)
     if not result["redeemed"]:
         return {"gold": 0, "platinum": 0, "redeemed": False,
@@ -250,6 +253,28 @@ def apply_redeem(conn, user_id, redeem_code):
         "redeemed": True,
         "error_message": "",
     }
+
+
+def _apply_bundle_redeem(conn, user_id, redeem_code):
+    """Grant a redeem_bundles.json bundle once per player."""
+    from services import redeem_bundles
+    code = redeem_code.strip().upper()
+    if not redeem_bundles.claim(conn, user_id, code):
+        return {"gold": 0, "platinum": 0, "redeemed": False,
+                "error_message": "You have already redeemed this code."}
+    granted = redeem_bundles.apply_bundle(conn, user_id, code)
+    contents = "\n".join(f"- {line}" for line in granted["summary"]) or "- a thank-you"
+    db_send_email(
+        user_id, f"Code Redeemed: {granted['title']}",
+        f"You have successfully redeemed code '{code}' and received:\n"
+        f"{contents}\n\nThank you for playing Hex: Shards of Fate!",
+        "SYSTEM", conn=conn)
+    log_req(f"    Bundle {code}: {granted['card_copies']} cards, "
+            f"{len(granted['inventory_updates'])} inventory items, "
+            f"decks={granted['decks']}")
+    return {"gold": 0, "platinum": 0, "redeemed": True, "error_message": "",
+            "card_grants": granted["card_copies"] or granted["decks"],
+            "inventory_updates": granted["inventory_updates"]}
 
 
 def handle_get_items(handler, target, instance, reqid, comp, session_id, conh,
@@ -316,6 +341,10 @@ def handle_purchase(handler, target, instance, reqid, comp, session_id, conh,
             f"{result.get('total_cost', 0)}")
 
 
+# Larger grants (e.g. every piece of equipment) reach the client at relog.
+_MAX_INVENTORY_PUSHES = 200
+
+
 def handle_redeem(handler, target, instance, reqid, comp, session_id, conh,
                   inner_obj, SERVICE_MAIL_UID, **_kw):
     """ServiceEscrow — RedeemCode (6013)."""
@@ -333,6 +362,13 @@ def handle_redeem(handler, target, instance, reqid, comp, session_id, conh,
         p["platinum"] += plat_delta
         if result.get("card_grants"):
             handler.push_cards_to_client()
+        updates = result.get("inventory_updates") or ()
+        if len(updates) <= _MAX_INVENTORY_PUSHES:
+            for template_guid, item_uid, total in updates:
+                handler.push_inventory_to_client(
+                    qty=total, template_guid=template_guid, item_id=item_uid)
+        else:
+            log_req(f"    {len(updates)} inventory items arrive on next login")
         log_req(f"    RedeemCode success: gold+{gold_delta} plat+{plat_delta}")
     else:
         log_req(f"    RedeemCode invalid: {redeem_code}")
