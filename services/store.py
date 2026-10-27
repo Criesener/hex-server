@@ -258,7 +258,7 @@ def apply_redeem(conn, user_id, redeem_code):
 def _apply_bundle_redeem(conn, user_id, redeem_code):
     """Grant a redeem_bundles.json bundle once per player."""
     from services import redeem_bundles
-    code = redeem_code.strip().upper()
+    code = redeem_bundles.code_key(redeem_code)
     if not redeem_bundles.claim(conn, user_id, code):
         return {"gold": 0, "platinum": 0, "redeemed": False,
                 "error_message": "You have already redeemed this code."}

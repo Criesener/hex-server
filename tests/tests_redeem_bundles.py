@@ -92,7 +92,8 @@ def test_redeem_warrior_grants_once_per_player():
     decks = _db.execute(
         "SELECT COUNT(*) FROM decks WHERE user_id=?", (user,)).fetchone()[0]
     assert decks - before_decks == 3, (before_decks, decks)
-    again = apply_redeem(_db, user, "KS-WARRIOR")
+    # The client strips "-" from typed codes; a dash still counts as the same code.
+    again = apply_redeem(_db, user, "KSWARRIOR")
     assert not again["redeemed"] and "already" in again["error_message"]
     assert _inventory(user, SET1_BOOSTER) - before_packs == 25
     other = _user("ks-warrior-friend")

@@ -17,24 +17,29 @@ _PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)),
                      "redeem_bundles.json")
 
 
+def code_key(code):
+    """Uppercase alphanumerics only: the client strips "-" from typed codes."""
+    return "".join(ch for ch in str(code or "").upper() if ch.isalnum())
+
+
 @lru_cache(maxsize=None)
 def load_bundles():
-    """Return ``{CODE: bundle}`` from redeem_bundles.json (empty if missing)."""
+    """Return ``{CODEKEY: bundle}`` from redeem_bundles.json (empty if missing)."""
     if not os.path.exists(_PATH):
         return {}
     with open(_PATH) as f:
         data = json.load(f)
-    return {code.upper(): bundle for code, bundle in data.items()
+    return {code_key(code): bundle for code, bundle in data.items()
             if not code.startswith("_")}
 
 
 def is_bundle_code(code):
-    return str(code or "").strip().upper() in load_bundles()
+    return code_key(code) in load_bundles()
 
 
 def resolve(code, _seen=None):
     """Merge a bundle with everything it includes into one flat bundle."""
-    code = str(code).strip().upper()
+    code = code_key(code)
     bundles = load_bundles()
     seen = _seen if _seen is not None else set()
     if code in seen or code not in bundles:
@@ -102,7 +107,7 @@ def claim(conn, user_id, code):
     """Record a claim; False when this player already redeemed the code."""
     cursor = conn.execute(
         "INSERT OR IGNORE INTO redeem_code_claims (user_id, code) VALUES (?, ?)",
-        (user_id, str(code).strip().upper()))
+        (user_id, code_key(code)))
     return cursor.rowcount == 1
 
 
