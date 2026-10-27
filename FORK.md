@@ -90,6 +90,18 @@ modeled.
 Bundles are data: edit [redeem_bundles.json](redeem_bundles.json) to change
 the contents or add codes. No code change is needed.
 
+## Server perks
+
+[server_perks.json](server_perks.json) holds optional economy perks for a solo
+or collection server. They are on by default; set a switch to `false` or `0`
+to restore the original economy.
+
+| Setting | Effect |
+|---|---|
+| `gold_rewards_also_grant_platinum` | Every gold reward also grants the same amount of platinum: campaign rewards, Frost Ring Arena cash-out, Wheel of Fate gold reels and redeem codes. |
+| `level_up_currency_per_level` | Reaching account level N grants N × this value in gold and in platinum. Levels reached earlier are not paid out. |
+| `wheel_paid_respin_refund` | A Wheel of Fate spin that leaves a paid re-spin also grants that spin's gold cost, at the chest's rarity after any upgrade. |
+
 ## Running on macOS
 
 [scripts/macos/hex-server.sh](scripts/macos/hex-server.sh) wraps the Docker

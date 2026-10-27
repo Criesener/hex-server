@@ -38,8 +38,9 @@ from profile_db import (db_add_collection, db_add_inventory,
                         db_inventory_item, db_next_inventory_client_uid,
                         db_upsert_inventory_item, db_reward_card_template,
                         db_grant_card_instance,
-                        db_adjust_user_currency, db_champion_reward_profile,
+                        db_champion_reward_profile,
                         db_update_champion_xp, db_create_treasure_chest)
+from services import server_perks
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -6135,8 +6136,8 @@ def _apply_conversation_rewards(handler, db, camp_id, state,
         xp = 0
 
     if gold:
-        new_gold, platinum = db_adjust_user_currency(
-            user_id, gold_delta=gold, conn=db)
+        new_gold, platinum, _perk_platinum = server_perks.grant_reward_gold(
+            user_id, gold, db)
         applied["Accounts"].append({"Account": {
             "Gold": new_gold, "Platinum": platinum,
         }})
@@ -6617,8 +6618,8 @@ def _apply_encounter_end_rewards(handler, db, session, camp_id, won):
 
     account = None
     if total_gold:
-        new_gold, platinum = db_adjust_user_currency(
-            player_user_id, gold_delta=total_gold, conn=db)
+        new_gold, platinum, _perk_platinum = server_perks.grant_reward_gold(
+            player_user_id, total_gold, db)
         account = {"Gold": new_gold, "Platinum": platinum}
 
     champion_bits = None

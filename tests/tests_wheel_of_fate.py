@@ -17,6 +17,10 @@ import hconnect_server
 from profile_db import (db_create_treasure_chest, db_get_unopened_chests_full,
                         db_get_user_currency)
 from services import wheel_of_fate as wof
+from services import server_perks
+
+# These tests pin the original economy; tests_server_perks covers the perks.
+mock.patch.object(server_perks, "config", lambda: {}).start()
 from services.chest_loot import SET1, pve_card_pool
 
 SET3 = "fce480eb-15f9-4096-8d12-6beee9118652"

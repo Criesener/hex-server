@@ -482,11 +482,15 @@ def _cash_out(handler, target, instance, reqid, comp, session_id, conh,
         log_prefix="reveal", challengers=result.get("challengers", []),
         reveal_all=True)
     if gold and hasattr(handler, "push_currency_to_client"):
-        handler.push_currency_to_client(gold_delta=gold)
+        handler.push_currency_to_client(
+            gold_delta=gold, platinum_delta=result.get("platinum", 0))
         if isinstance(handler.user_profile, dict):
             handler.user_profile["gold"] = int(
                 result.get("new_gold", handler.user_profile.get("gold", 0))
                 or 0)
+            handler.user_profile["platinum"] = int(
+                handler.user_profile.get("platinum", 0) or 0) + int(
+                result.get("platinum", 0) or 0)
     resp_inner = encode_objfmt_response(
         ["Game.Client.Network.Campaign.DoArenaCashOutResponse",
          "System.Boolean", "System.Int32", "System.String",

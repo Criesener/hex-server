@@ -762,11 +762,17 @@ def _spin_client_chest(handler, chest_uid, rng=None):
 
     result = wof.roll_spin(_db, _load_card_templates(), chest.set_guid,
                            chest.chest_type, rng or random)
-    db_adjust_user_currency(user_id, gold_delta=result.gold - cost, conn=_db)
+    # Perks (issue #14): reel gold also brings platinum, and a paid re-spin
+    # comes with the gold it costs at the chest's new rarity.
+    from services import server_perks
+    refund = server_perks.paid_respin_refund(result.spin_status, result.rarity)
+    db_adjust_user_currency(
+        user_id, gold_delta=result.gold + refund - cost,
+        platinum_delta=server_perks.reward_platinum(result.gold), conn=_db)
     wof.save_spin(_db, chest.db_id, result)
     summary.update(
         rarity=result.rarity, spin_status=result.spin_status,
-        gold=result.gold, colors=result.colors, symbols=result.symbols,
+        gold=result.gold + refund, colors=result.colors, symbols=result.symbols,
         outcome=result.outcome,
         cards=_grant_reward_cards(user_id, result.cards),
         inventory_updates=_grant_pack_inventory_rewards(
@@ -774,7 +780,8 @@ def _spin_client_chest(handler, chest_uid, rng=None):
     _db.commit()
     log_req(f"    Spun chest {chest_uid} ({chest.chest_type}, cost {cost}): "
             f"{result.outcome} symbols={result.symbols} colors={result.colors} "
-            f"gold={result.gold} -> {result.rarity} status={result.spin_status}")
+            f"gold={result.gold} refund={refund} -> {result.rarity} "
+            f"status={result.spin_status}")
     return summary
 
 

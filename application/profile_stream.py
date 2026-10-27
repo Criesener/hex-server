@@ -101,6 +101,9 @@ class ProfileStreamMixin:
         if level_sync:
             p["experience"] = level_sync["xp"]
             p["level"] = account_level
+            gold += level_sync["gold"]
+            platinum += level_sync["platinum"]
+            p["gold"], p["platinum"] = gold, platinum
         self._push_profile_stream_object(
             account_xp.encode_cap_info(account_level),
             f"AccountXpCap (level {account_level})")
@@ -857,6 +860,11 @@ class ProfileStreamMixin:
             return
         self.user_profile["experience"] = result["xp"]
         self.user_profile["level"] = result["level"]
+        if result["gold"] or result["platinum"]:
+            self.user_profile["gold"] = self.user_profile.get("gold", 0) + result["gold"]
+            self.user_profile["platinum"] = (
+                self.user_profile.get("platinum", 0) + result["platinum"])
+            self.push_balance_to_client()
         for template_guid, item_uid, quantity in result["inventory_updates"]:
             self.push_inventory_to_client(
                 qty=quantity, template_guid=template_guid, item_id=item_uid)

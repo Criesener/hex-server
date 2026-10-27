@@ -85,8 +85,10 @@ def sync_level(conn, user_id, rng=random):
     where ``inventory_updates`` are ``(template_guid, client_uid, quantity)``
     rows for InventoryUpdated pushes.  The caller commits.
     """
-    from profile_db import (db_next_inventory_client_uid, db_send_email,
+    from profile_db import (db_adjust_user_currency,
+                            db_next_inventory_client_uid, db_send_email,
                             db_upsert_inventory_item)
+    from services import server_perks
     row = conn.execute("SELECT COALESCE(experience,0), COALESCE(level,1) "
                        "FROM users WHERE id=?", (user_id,)).fetchone()
     if not row:
@@ -94,7 +96,7 @@ def sync_level(conn, user_id, rng=random):
     xp, old_level = int(row[0]), max(1, int(row[1]))
     level = level_for_xp(xp)
     result = {"xp": xp, "level": max(level, old_level), "old_level": old_level,
-              "sleeves": [], "inventory_updates": []}
+              "sleeves": [], "inventory_updates": [], "gold": 0, "platinum": 0}
     if level <= old_level:
         return result
     missing = missing_sleeves(conn, user_id)
@@ -111,6 +113,14 @@ def sync_level(conn, user_id, rng=random):
             reward = f"the deck sleeve '{name}'"
         else:
             reward = "no new sleeve (you own them all)"
+        # Perk (issue #14): level N also pays N x 1000 gold and platinum.
+        currency = server_perks.level_up_currency(reached)
+        if currency:
+            db_adjust_user_currency(user_id, gold_delta=currency,
+                                    platinum_delta=currency, conn=conn)
+            result["gold"] += currency
+            result["platinum"] += currency
+            reward += f", {currency:,} Gold and {currency:,} Platinum"
         db_send_email(
             user_id, f"Account level {reached} reached",
             f"Congratulations, your account reached level {reached}! "
@@ -118,7 +128,8 @@ def sync_level(conn, user_id, rng=random):
             "SYSTEM", conn=conn)
     conn.execute("UPDATE users SET level=? WHERE id=?", (level, user_id))
     log_req(f"    Account level {old_level} -> {level} (xp={xp}), "
-            f"sleeves={[name for _guid, name in result['sleeves']]}")
+            f"sleeves={[name for _guid, name in result['sleeves']]}, "
+            f"gold/platinum +{result['gold']}")
     return result
 
 

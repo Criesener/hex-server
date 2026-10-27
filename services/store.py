@@ -231,6 +231,9 @@ def apply_redeem(conn, user_id, redeem_code):
         return {"gold": 0, "platinum": 0, "redeemed": False,
                 "error_message": result["error_message"]}
     card_grants = grant_vendor_code_cards(user_id, redeem_code, conn=conn)
+    # Perk: a code's gold is a reward, so it also brings platinum (issue #14).
+    from services import server_perks
+    result["platinum"] += server_perks.reward_platinum(result["gold"])
     new_gold, new_platinum = db_adjust_user_currency(
         user_id, gold_delta=result["gold"],
         platinum_delta=result["platinum"], conn=conn)

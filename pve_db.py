@@ -13,11 +13,11 @@ from contextlib import contextmanager
 from domain.enums import ECardTypes, ETurnPhases
 from gamemodes.arena import TIER_ONE_BOSS_RANK
 from profile_db import (RECKONING_FLAG_ARENA_TIER1_PERFECT,
-                        db_adjust_user_currency,
                         db_get_reckoning_flags,
                         db_set_reckoning_flag)
 
 from pvp_db import db_delete_game_session, db_champion_template_health
+from services import server_perks
 
 
 _FRA_CHALLENGE_COLUMNS = (
@@ -284,8 +284,8 @@ def db_claim_arena_rewards(user_id, conn=None):
 
         loot = _fra_gold_rewards(history, sack_count) if sack_count else []
         gold = sum(int(item.get("gold", 0) or 0) for item in loot)
-        new_gold, _new_platinum = db_adjust_user_currency(
-            user_id, gold_delta=gold, conn=connection)
+        new_gold, _new_platinum, platinum = server_perks.grant_reward_gold(
+            user_id, gold, connection)
         db_update_arena_state(
             user_id, conn=connection, deck_id=0, wins=0, losses=0,
             challenger_index=0, fight_history="[]", gold_earned=0,
@@ -293,8 +293,8 @@ def db_claim_arena_rewards(user_id, conn=None):
         db_clear_fra_challengers(user_id, conn=connection)
         return {
             "success": True, "error": 0, "error_message": "",
-            "gold": gold, "loot": loot, "challengers": challengers,
-            "new_gold": new_gold,
+            "gold": gold, "platinum": platinum, "loot": loot,
+            "challengers": challengers, "new_gold": new_gold,
         }
 
 

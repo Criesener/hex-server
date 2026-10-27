@@ -26,6 +26,7 @@ RUN python3 -m pip install --no-cache-dir -r /hex/requirements.txt
 COPY *.py /hex/
 COPY redeem_bundles.json /hex/redeem_bundles.json
 COPY account_levels.json /hex/account_levels.json
+COPY server_perks.json /hex/server_perks.json
 COPY AssetExtraction/ /hex/AssetExtraction/
 COPY abilities/ /hex/abilities/
 COPY application/ /hex/application/
