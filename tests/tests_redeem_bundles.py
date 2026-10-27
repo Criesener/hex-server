@@ -100,6 +100,23 @@ def test_redeem_warrior_grants_once_per_player():
     assert apply_redeem(_db, other, "KS-WARRIOR")["redeemed"]
 
 
+def test_overlapping_tiers_keep_one_starter_deck_per_race():
+    """Issue #7: Captain after Warrior adds the cards but not the decks again."""
+    from services.store import _STARTER_DECKS
+    user = _user("ks-overlap-tester")
+    human_card = _STARTER_DECKS["Human"]["cards"][0][0]
+    assert apply_redeem(_db, user, "KS-WARRIOR")["redeemed"]
+    after_warrior = _copies(user, human_card)
+    assert apply_redeem(_db, user, "KS-CAPTAIN")["redeemed"]
+    names = [row[0] for row in _db.execute(
+        "SELECT deck_name FROM decks WHERE user_id=? AND deck_name LIKE "
+        "'% Starter Deck'", (user,)).fetchall()]
+    assert sorted(names) == ["Dwarf Starter Deck", "Elf Starter Deck",
+                             "Human Starter Deck", "Orc Starter Deck"], names
+    # The Human deck's cards still arrive a second time.
+    assert _copies(user, human_card) == 2 * after_warrior, (
+        after_warrior, _copies(user, human_card))
+
 def test_plain_codes_still_work():
     user = _user("plain-code-tester")
     assert apply_redeem(_db, user, "5000gold")["gold"] == 5000
@@ -148,6 +165,8 @@ if __name__ == "__main__":
     run("king merges lower tiers once", test_king_merges_lower_tiers_once)
     run("every bundle name resolves", test_every_bundle_name_resolves)
     run("warrior grants once per player", test_redeem_warrior_grants_once_per_player)
+    run("overlapping tiers keep one starter deck per race",
+        test_overlapping_tiers_keep_one_starter_deck_per_race)
     run("plain codes still work", test_plain_codes_still_work)
     run("spectral oak daily acorn", test_spectral_oak_grants_one_acorn_per_day)
     run("redeem response encoding", test_redeem_response_matches_the_legacy_encoding)

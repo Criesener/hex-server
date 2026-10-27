@@ -213,8 +213,20 @@ def apply_bundle(conn, user_id, code, rng=random):
         if not deck:
             log_req(f"    Bundle {code}: unknown starter deck '{race}'")
             continue
-        _grant_deck_to_player(user_id, deck["cards"], f"{race} Starter Deck",
-                              conn=conn)
+        deck_name = f"{race} Starter Deck"
+        # Overlapping tiers grant the same starter decks again: add the
+        # cards, but keep a single deck list per name (issue #7).
+        if conn.execute("SELECT 1 FROM decks WHERE user_id=? AND deck_name=?",
+                        (user_id, deck_name)).fetchone():
+            for guid, count in deck["cards"]:
+                db_add_collection(user_id, guid, count, conn=conn)
+                for _ in range(count):
+                    db_insert_card_instance(user_id, next_id, guid, conn=conn)
+                    next_id += 1
+        else:
+            _grant_deck_to_player(user_id, deck["cards"], deck_name,
+                                  conn=conn)
+            next_id = db_next_card_instance_for_user(user_id, conn=conn)
         decks.append(race)
     if decks:
         summary.append("Starter Decks: " + ", ".join(decks))
