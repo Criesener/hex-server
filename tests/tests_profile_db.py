@@ -182,10 +182,23 @@ def test_new_user_receives_only_public_command_welcome_mail():
     assert "!greenlight" not in row[1]
 
 
+
+def test_new_player_starts_with_only_the_basic_shards():
+    """Issue #5: a fresh account has no Lixil, Heartsworn."""
+    import db as db_layer
+    import new_player
+    user_id = db_get_or_create_user("ShardsOnlyPlayer")["id"]
+    rows = db_layer._db.execute(
+        "SELECT template_guid, COUNT(*) FROM card_instances WHERE user_id=? "
+        "GROUP BY template_guid", (user_id,)).fetchall()
+    assert dict(rows) == {guid: new_player.SHARD_QUANTITY
+                          for guid in new_player.BASIC_SHARDS}, rows
+
 if __name__ == "__main__":
     test_inventory_consume_and_upsert_are_connection_scoped()
     test_deck_champion_and_card_instance_helpers_preserve_ownership()
     test_adjust_user_currency_is_atomic_and_connection_scoped()
     test_reset_account_keeps_pve_and_extended_art_cards()
     test_new_user_receives_only_public_command_welcome_mail()
+    test_new_player_starts_with_only_the_basic_shards()
     print("profile DB tests passed")

@@ -27,11 +27,6 @@ BASIC_SHARDS = [
 # Starting quantity of each basic shard in the player's collection.
 SHARD_QUANTITY = 100
 
-# A single "Lixil, Heartsworn" legendary troop from the Frostheart set
-# (Frostheart set GUID 326602fa; this is the PvP-legal printing).
-HEARTSWORN_GUID = "ed564600-b44d-47bd-8b74-e0fe5100171a"
-HEARTSWORN_QUANTITY = 1
-
 # Set 1 "Shards of Fate" booster pack granted to new players (3 packs).
 PACK_GUID = "a8b78207-686a-4994-b6cd-4548d1349841"
 PACK_QUANTITY = 3
@@ -68,9 +63,6 @@ def grant_new_player(db, user_id):
     # 100 of each basic shard in the collection.
     for shard_guid in BASIC_SHARDS:
         grant_cards(shard_guid, SHARD_QUANTITY)
-
-    # 1 "Lixil, Heartsworn" legendary in the collection.
-    grant_cards(HEARTSWORN_GUID, HEARTSWORN_QUANTITY)
 
     # 3 Shards of Fate booster packs in the inventory.
     db_grant_inventory_item(user_id, PACK_GUID, PACK_QUANTITY, conn=db)
