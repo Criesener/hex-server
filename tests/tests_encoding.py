@@ -983,6 +983,14 @@ def test_card_moved_accepts_new_card_id_scid():
     print("  PASS test_card_moved_accepts_new_card_id_scid")
 
 
+def test_redact_secrets_masks_login_password():
+    from db import redact_secrets
+    body = '{"action":"auth","user":"a@b.c","pass":"s3\\"cr","token":"t","region":"EU"}'
+    out = redact_secrets(body)
+    assert '"pass":"***"' in out and '"token":"***"' in out, out
+    assert "s3" not in out and '"user":"a@b.c"' in out and '"region":"EU"' in out, out
+
+
 def run_all():
     tests = [
         test_objfmt_basic_types,
@@ -997,6 +1005,7 @@ def run_all():
         test_spin_wheel_response,
         test_size_table_consistency,
         test_card_moved_accepts_new_card_id_scid,
+        test_redact_secrets_masks_login_password,
     ]
     failed = 0
     for t in tests:

@@ -619,6 +619,14 @@ def hexdump(data, max_bytes=256):
     return s
 
 
+_SECRET_JSON_FIELD = re.compile(r'("(?:pass|password|token)"\s*:\s*)"(?:[^"\\]|\\.)*"', re.I)
+
+
+def redact_secrets(text):
+    """Mask password/token values in a JSON request body before logging it."""
+    return _SECRET_JSON_FIELD.sub(r'\1"***"', text)
+
+
 # --- Per-instance card helpers (game_cards) --------------------------------
 # Reusable reads/writes for a card instance's ability/state/stat data. These
 # back the handler-level wrappers so ability.py and the server share one source

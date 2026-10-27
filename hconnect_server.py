@@ -176,7 +176,7 @@ def _target_count_from_text(game_text):
 def _talent_ability_guid(talent_guid: str) -> str | None:
     """Resolve a champion talent GUID to its actual ability GUID via DB."""
     return db_talent_data_ability_guid(talent_guid, conn=_db)
-from db import _db, log, log_req, hexdump, set_log_context
+from db import _db, log, log_req, hexdump, redact_secrets, set_log_context
 from debug_runtime import enable_debugpy, trace_rules_port
 from db import (player_id_from_name, player_id_from_steam, display_name_from_identity,
                 STARDUST_TEMPLATES, CHEST_TEMPLATE)
@@ -12151,7 +12151,7 @@ class HCPHandler(ProfileStreamMixin):
         # Try to dump body content
         if body:
             if instance == "auth:req":
-                log_req(f"  body_json={body.decode('utf-8', errors='replace')}")
+                log_req(f"  body_json={redact_secrets(body.decode('utf-8', errors='replace'))}")
             else:
                 log_req(f"  body_hex={hexdump(body)}", level="DEBUG")
 
