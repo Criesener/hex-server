@@ -1848,6 +1848,19 @@ def ensure_schema(db):
              '"id": "Step1"',
              "q_smoldering_dead"),
         )
+        # Winston's bridge-closed conversation starts Cross the River.  The
+        # extractor dropped it before 2026-10-27 (issue #3); databases seeded
+        # earlier never got the row, so add it idempotently.
+        db.execute(
+            "INSERT OR IGNORE INTO quest_conversations "
+            "(quest_script,conversation_guid,campaign_template,node_id,npc,"
+            "role,faction,conversation_name,start_hook,conditions_json,priority,enabled) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("az01_q_cross_the_river",
+             "81ab7bb5-21b4-4030-8e87-8fc4a206b1ab", "AZ1", "Node012",
+             "Winston", "start", "", "AZ1 - Node 12 - Winston - Step 1",
+             "", "{}", 0, 1),
+        )
         # Wallace's authored post-Dryad conversation starts Cross the Zodiac
         # River. The extracted quest conversation catalog does not carry this
         # handoff, so seed the metadata link idempotently for existing saves.

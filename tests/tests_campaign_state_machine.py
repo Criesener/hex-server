@@ -86,6 +86,89 @@ def test_cross_zila_objective_is_linked_to_savage_lord():
         os.unlink(path)
 
 
+WINSTON_STEP1 = "81ab7bb5-21b4-4030-8e87-8fc4a206b1ab"
+
+
+def test_winston_step1_starts_cross_the_river():
+    """Issue #3: talking to Winston must start Cross the River."""
+    db, path = cloned_db()
+    try:
+        rows = db.execute(
+            "SELECT quest_script, node_id, role FROM quest_conversations "
+            "WHERE conversation_guid=?", (WINSTON_STEP1,)).fetchall()
+        assert rows == [("az01_q_cross_the_river", "Node012", "start")], rows
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def test_visited_winston_backfills_the_missing_cross_the_river_quest():
+    """Issue #3: saves stuck after Winston get the quest on the next sync."""
+    db, path = cloned_db()
+    try:
+        db.execute(
+            "DELETE FROM campaigns WHERE champion_id=? AND campaign_type='QUEST' "
+            "AND template_name=?", (6, "az01_q_cross_the_river"))
+        db.commit()
+        _area_id, state = area_state(db)
+        pdata = state.setdefault("PublicState", {}).setdefault("Data", {})
+        pdata["conversation_visits"] = {}
+        campaign._sync_az1_quest_gates(db, 6, state)
+        assert campaign._quest_state_row(
+            db, 6, "az01_q_cross_the_river")[0] is None
+        pdata["conversation_visits"] = {"Node012": 1}
+        state["LastNode"] = "Node012"
+        campaign._sync_az1_quest_gates(db, 6, state)
+        assert campaign._quest_state_row(
+            db, 6, "az01_q_cross_the_river")[0] is not None
+        razortooth = next(x["Data"] for x in state["VisLocs"]
+                          if x["Data"].get("node") == "Node014")
+        assert razortooth["visible"] is True
+    finally:
+        db.close()
+        os.unlink(path)
+
+def test_area_gameend_keeps_the_hero_on_the_encounter_node():
+    """Issue #1: an AREA result must not store the AZ0 trainer as LastNode."""
+    db, path = cloned_db()
+    try:
+        area_id, state = area_state(db)
+        encounter = next(loc["Data"] for loc in state["VisLocs"]
+                         if loc["Data"].get("type") == "Encounter"
+                         and str(loc["Data"].get("node", "")).startswith("Node"))
+        state["ALoc"] = encounter.get("name") or encounter["node"]
+        state.pop("ActiveEncounterGuid", None)
+        db.execute("UPDATE campaigns SET state_json=? WHERE id=?",
+                   (json.dumps(state), area_id))
+        db.commit()
+        trainers = {cfg.get("trainer_npc")
+                    for cfg in campaign._AZ0_RACE_CONFIG.values()}
+        for won in (True, False):
+            _camp_id, result = campaign._apply_gameend(db, area_id, won)
+            assert result["LastNode"] == encounter["node"], result["LastNode"]
+            assert not any(loc["Data"].get("node") in trainers
+                           for loc in result["VisLocs"])
+            assert "TrainingVictoryPending" not in result
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def test_area_state_repair_drops_az0_trainer_leftovers():
+    """Issue #1: saves that already stored the trainer are repaired."""
+    trainer = next(iter(campaign._AZ0_RACE_CONFIG.values()))["trainer_npc"]
+    state = {
+        "LastNode": trainer, "ALoc": trainer, "TrainingVictoryPending": True,
+        "VisLocs": [campaign._convo_location(trainer, "c"),
+                    {"Data": {"node": "Node003", "name": "Dunnwood"}}],
+        "PublicState": {"Data": {"visited_nodes": ["Node001", "Node003",
+                                                   trainer]}},
+    }
+    campaign._repair_az0_leftovers_in_area(state)
+    assert state["LastNode"] == "Node003"
+    assert "ALoc" not in state and "TrainingVictoryPending" not in state
+    assert [loc["Data"]["node"] for loc in state["VisLocs"]] == ["Node003"]
+
 def test_node00r_uses_authored_node_r_conversation_fallback():
     db, path = cloned_db()
     try:
@@ -1613,6 +1696,10 @@ if __name__ == "__main__":
         test_node00r_faction_quest_branch_opens_lena_grotto_and_stays_retryable,
         test_node00r_finished_faction_quest_uses_terminal_conversation,
         test_cross_zila_and_zodiac_gates_follow_quest_progress,
+        test_winston_step1_starts_cross_the_river,
+        test_area_gameend_keeps_the_hero_on_the_encounter_node,
+        test_area_state_repair_drops_az0_trainer_leftovers,
+        test_visited_winston_backfills_the_missing_cross_the_river_quest,
         test_az1_unfinished_encounter_does_not_reveal_outgoing_paths,
         test_az1_unvisited_repeatable_conversations_are_not_blue,
         test_az1_direct_node00r_route_is_not_replaced_by_fork_path,

@@ -1085,9 +1085,13 @@ _QUEST_CONVERSATION_ALIASES = {
     # The authored AZ2 map calls this location Brutecrown Delta while the
     # quest template is named after the Bluff encounter.
     "q_brutecrown_bluff": ("Brutecrown Delta",),
-    # Winston's bridge-closed dialogue starts the AZ1 Cross the River quest,
-    # although the authored conversation name does not include the quest
-    # title or the words "Quest Start".
+}
+
+# Conversations that start a quest although their authored names carry no
+# quest role.  Winston's bridge-closed dialogue starts the AZ1 Cross the River
+# quest without the quest title or the words "Quest Start"; the role check
+# alone dropped it, so the bridge never revealed Node013/Node014.
+_QUEST_START_CONVERSATIONS = {
     "az01_q_cross_the_river": ("Winston - Step 1",),
 }
 
@@ -1168,15 +1172,22 @@ def _extract_quest_conversations(data: str) -> list[tuple[Any, ...]]:
         # associates both Tamed and the faction Find quest.
         if campaign_template == "AZ1" and node_id == "Node002" and faction:
             role = "start"
+        full_norm = _normalise_quest_label(name)
+        start_scripts = [
+            script for script, labels in _QUEST_START_CONVERSATIONS.items()
+            if any(_normalise_quest_label(label) in full_norm
+                   for label in labels)]
+        if start_scripts and not role:
+            role = "start"
         if not role:
             continue
-        full_norm = _normalise_quest_label(name)
         matches = [script for _length, title, script in title_candidates
                    if title in full_norm]
         for script, aliases in _QUEST_CONVERSATION_ALIASES.items():
             if any(_normalise_quest_label(alias) in full_norm
                    for alias in aliases):
                 matches.append(script)
+        matches.extend(start_scripts)
         # Node002 is the authored hand-off conversation for Tamed plus the
         # faction-specific Find quest, despite having no quest title in its
         # name.  Keep this source-data exception in the extracted catalog,

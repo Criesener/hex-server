@@ -2829,6 +2829,60 @@ def _run_quest_start_hook(db, champ_id, hook_name):
     return changed
 
 
+# Quest-start conversations whose catalog row was missing in older databases
+# (issue #3: Winston's Step 1 never granted Cross the River).  A save that
+# already visited the node never replays the conversation, so grant the quest
+# from the recorded visit instead.
+_AZ1_BACKFILL_QUEST_STARTS = (
+    ("Node012", "81ab7bb5-21b4-4030-8e87-8fc4a206b1ab"),
+)
+
+
+def _backfill_visited_quest_starts(db, champ_id, state):
+    data = ((state.get("PublicState") or {}).get("Data") or {})
+    visits = data.get("conversation_visits") or {}
+    for node_id, conversation_guid in _AZ1_BACKFILL_QUEST_STARTS:
+        try:
+            visited = int(visits.get(node_id, 0) or 0) > 0
+        except (TypeError, ValueError):
+            visited = False
+        if not visited:
+            continue
+        rows = pve_db.db_quest_start_rows(conversation_guid, "AZ1", conn=db)
+        if any(_quest_state_row(db, champ_id, row[0])[0] is None
+               for row in rows):
+            _grant_quests_for_conversation(db, champ_id, "AZ1",
+                                           conversation_guid)
+
+
+def _repair_az0_leftovers_in_area(state):
+    """Drop AZ0 trainer/quest-giver leftovers from an AREA state (issue #1).
+
+    Older servers added those panorama conversations to AREA maps after a
+    battle and could store the trainer as LastNode, which the client cannot
+    find on the map, so it parked the hero token on the first node.
+    """
+    names = {cfg.get(key) for cfg in _AZ0_RACE_CONFIG.values()
+             for key in ("trainer_npc", "quest_npc")} - {None, ""}
+    locations = state.get("VisLocs") or []
+    kept = [loc for loc in locations
+            if (loc.get("Data") or {}).get("node") not in names]
+    if len(kept) != len(locations):
+        state["VisLocs"] = kept
+    state.pop("TrainingVictoryPending", None)
+    if state.get("ALoc") in names:
+        state.pop("ALoc", None)
+    if state.get("LastNode") in names:
+        visited = ((state.get("PublicState") or {}).get("Data") or {}).get(
+            "visited_nodes") or []
+        nodes = [node for node in visited
+                 if str(node).startswith("Node") and node not in names]
+        if nodes:
+            state["LastNode"] = nodes[-1]
+        else:
+            state.pop("LastNode", None)
+
+
 def _sync_az1_quest_gates(db, champ_id, state):
     """Reapply active quest start hooks after reconnects or state rebuilds.
 
@@ -2841,6 +2895,8 @@ def _sync_az1_quest_gates(db, champ_id, state):
     if not isinstance(state, dict):
         return False
     before = json.dumps(state, sort_keys=True)
+    _repair_az0_leftovers_in_area(state)
+    _backfill_visited_quest_starts(db, champ_id, state)
     hooks = pve_db.db_active_quest_hooks(champ_id, conn=db)
     for _quest_id, hook_name in hooks:
         try:
@@ -5570,6 +5626,10 @@ def _apply_gameend(db, camp_id, won):
         raise RuntimeError("AZ0 campaign configuration is unavailable")
 
     is_dungeon = (ctype or "").upper() == "DUNGEON"
+    # The trainer and quest-giver conversations belong to the AZ0 panorama.
+    # On an AZ1/AZ2 AREA map they replaced ALoc with the trainer NPC, so an
+    # encounter result matched that NPC and stored it as LastNode (issue #1).
+    is_training_map = not is_dungeon and (ctype or "").upper() != "AREA"
 
     if won:
         quest_npc = cfg["quest_npc"]
@@ -5578,7 +5638,7 @@ def _apply_gameend(db, camp_id, won):
         # Queue the authored post-training victory conversation first.  The
         # conversation-complete handler performs the normal trainer hide and
         # quest-giver reveal after the player advances through it.
-        if success_conv and trainer_npc and not is_dungeon:
+        if success_conv and trainer_npc and is_training_map:
             trainer_loc = None
             for loc in state.setdefault("VisLocs", []):
                 data = loc.get("Data", {})
@@ -5603,7 +5663,7 @@ def _apply_gameend(db, camp_id, won):
                 if data.get("node") == trainer_npc or data.get("name") == trainer_npc:
                     data["visible"] = False
                     data["completed"] = True
-        if not is_dungeon:
+        if is_training_map:
             # Only the panorama reveals the quest-giver; the dungeon has its
             # own node list and must not gain a stray panorama NPC location.
             if not any(l.get("Data", {}).get("node") == quest_npc
@@ -5633,7 +5693,7 @@ def _apply_gameend(db, camp_id, won):
         # client can play it immediately; the encounter remains retryable.
         fail_conv = cfg.get("training_fail_conv")
         trainer_npc = cfg.get("trainer_npc")
-        if fail_conv and trainer_npc and not is_dungeon:
+        if fail_conv and trainer_npc and is_training_map:
             trainer_loc = None
             for loc in state.setdefault("VisLocs", []):
                 data = loc.get("Data", {})
