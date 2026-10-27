@@ -13,6 +13,10 @@ from functools import lru_cache
 
 from db import log_req
 
+# Bounds the RedeemCodeResponse for "every card" tiers; the grant itself is
+# complete either way.
+MAX_REWARD_WINDOW_IDS = 1000
+
 _PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)),
                      "redeem_bundles.json")
 
@@ -217,6 +221,12 @@ def apply_bundle(conn, user_id, code, rng=random):
     for gift in bundle["gift_codes"]:
         summary.append(f"gift code for friends: {gift}")
 
+    # The client's reward window groups repeated template ids into counts.
+    reward_ids = [guid for guid, quantity in inventory.items()
+                  for _ in range(quantity)]
+    reward_ids += [guid for guid, quantity in cards.items() if guid in known
+                   for _ in range(quantity)]
     return {"title": bundle["title"], "card_copies": card_copies,
             "inventory_updates": inventory_updates, "decks": decks,
-            "summary": summary}
+            "summary": summary,
+            "reward_template_ids": reward_ids[:MAX_REWARD_WINDOW_IDS]}

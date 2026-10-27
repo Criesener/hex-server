@@ -116,9 +116,38 @@ def test_spectral_oak_grants_one_acorn_per_day():
     assert _copies(user, SPECTRAL_ACORN) == 2
 
 
+
+def test_redeem_response_matches_the_legacy_encoding():
+    """With no reward ids the builder output decodes like the old encoding."""
+    from encoder import encode_objfmt_response
+    from services.store import encode_redeem_response
+    legacy = encode_objfmt_response(
+        ["Game.Client.Network.Escrow.RedeemCodeResponse",
+         "System.Collections.Generic.List`1#Game.Shared.ResourceId",
+         "Game.Shared.ResourceId", "System.Guid", "System.Int32",
+         "System.Collections.Generic.List`1#Game.Shared.Domain.card_instance_bits",
+         "System.Collections.Generic.List`1#Game.Shared.Domain.deck_bits",
+         "Game.Shared.Network.Escrow.ERedeemCodeError", "System.String"],
+        [("ItemTemplateIds", "coll",
+          ("System.Collections.Generic.List`1#Game.Shared.ResourceId", 0)),
+         ("GoldDelta", "int", 5000), ("PlatinumDelta", "int", 0),
+         ("CardBits", "coll",
+          ("System.Collections.Generic.List`1#Game.Shared.Domain.card_instance_bits", 0)),
+         ("StarterDecksBits", "coll",
+          ("System.Collections.Generic.List`1#Game.Shared.Domain.deck_bits", 0)),
+         ("Error", "enum1", ("Game.Shared.Network.Escrow.ERedeemCodeError", 0)),
+         ("ErrorMessage", "string", "")])
+    from application.objfmt_wire import parse_datawrapper
+    built = encode_redeem_response((), 5000, 0, 0, "")
+    parsed, expected = parse_datawrapper(built), parse_datawrapper(legacy)
+    assert parsed == expected, (parsed, expected)
+    with_ids = encode_redeem_response([SET1_BOOSTER] * 2, 0, 0, 0, "")
+    assert with_ids.count(SET1_BOOSTER.encode()) == 2
+
 if __name__ == "__main__":
     run("king merges lower tiers once", test_king_merges_lower_tiers_once)
     run("every bundle name resolves", test_every_bundle_name_resolves)
     run("warrior grants once per player", test_redeem_warrior_grants_once_per_player)
     run("plain codes still work", test_plain_codes_still_work)
     run("spectral oak daily acorn", test_spectral_oak_grants_one_acorn_per_day)
+    run("redeem response encoding", test_redeem_response_matches_the_legacy_encoding)

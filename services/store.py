@@ -274,7 +274,8 @@ def _apply_bundle_redeem(conn, user_id, redeem_code):
             f"decks={granted['decks']}")
     return {"gold": 0, "platinum": 0, "redeemed": True, "error_message": "",
             "card_grants": granted["card_copies"] or granted["decks"],
-            "inventory_updates": granted["inventory_updates"]}
+            "inventory_updates": granted["inventory_updates"],
+            "reward_template_ids": granted["reward_template_ids"]}
 
 
 def handle_get_items(handler, target, instance, reqid, comp, session_id, conh,
@@ -341,6 +342,25 @@ def handle_purchase(handler, target, instance, reqid, comp, session_id, conh,
             f"{result.get('total_cost', 0)}")
 
 
+def encode_redeem_response(item_template_ids, gold_delta, plat_delta,
+                           error_value, error_message):
+    """RedeemCodeResponse; ItemTemplateIds fill the client's reward window."""
+    from objfmt_builder import ObjFmtBuilder
+    b = ObjFmtBuilder("Game.Client.Network.Escrow.RedeemCodeResponse")
+    b.field_resource_id_list("ItemTemplateIds", list(item_template_ids))
+    b.field_int("GoldDelta", gold_delta)
+    b.field_int("PlatinumDelta", plat_delta)
+    for name, element in (("CardBits", "card_instance_bits"),
+                          ("StarterDecksBits", "deck_bits")):
+        list_idx, start = b.begin_list(
+            name, f"System.Collections.Generic.List`1#Game.Shared.Domain.{element}", 0)
+        b._set_size(list_idx, start)
+    b.field_enum("Error", "Game.Shared.Network.Escrow.ERedeemCodeError",
+                 error_value)
+    b.field_str("ErrorMessage", error_message)
+    return b.finish(7)
+
+
 # Larger grants (e.g. every piece of equipment) reach the client at relog.
 _MAX_INVENTORY_PUSHES = 200
 
@@ -374,25 +394,9 @@ def handle_redeem(handler, target, instance, reqid, comp, session_id, conh,
         log_req(f"    RedeemCode invalid: {redeem_code}")
     error_value = 0 if result["redeemed"] else 1
     error_message = result.get("error_message", "")
-    resp_inner = encode_objfmt_response(
-        ["Game.Client.Network.Escrow.RedeemCodeResponse",
-         "System.Collections.Generic.List`1#Game.Shared.ResourceId",
-         "Game.Shared.ResourceId", "System.Guid", "System.Int32",
-         "System.Collections.Generic.List`1#Game.Shared.Domain.card_instance_bits",
-         "System.Collections.Generic.List`1#Game.Shared.Domain.deck_bits",
-         "Game.Shared.Network.Escrow.ERedeemCodeError", "System.String"],
-        [("ItemTemplateIds", "coll",
-          ("System.Collections.Generic.List`1#Game.Shared.ResourceId", 0)),
-         ("GoldDelta", "int", gold_delta),
-         ("PlatinumDelta", "int", plat_delta),
-         ("CardBits", "coll",
-          ("System.Collections.Generic.List`1#Game.Shared.Domain.card_instance_bits", 0)),
-         ("StarterDecksBits", "coll",
-          ("System.Collections.Generic.List`1#Game.Shared.Domain.deck_bits", 0)),
-         ("Error", "enum1",
-          ("Game.Shared.Network.Escrow.ERedeemCodeError", error_value)),
-         ("ErrorMessage", "string", error_message)]
-    )
+    resp_inner = encode_redeem_response(
+        result.get("reward_template_ids") or (), gold_delta, plat_delta,
+        error_value, error_message)
 
     resp_body = compress_gzip(resp_inner) if comp else resp_inner
     resp_reqid = reqid | 1
