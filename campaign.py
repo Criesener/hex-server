@@ -41,6 +41,7 @@ from profile_db import (db_add_collection, db_add_inventory,
                         db_champion_reward_profile,
                         db_update_champion_xp, db_create_treasure_chest)
 from services import server_perks
+from static import tame_objective_scene
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -248,7 +249,7 @@ def _quest_objective_scene_guid(db, quest_script, objective):
     explicit = str(objective.get("encounter") or "").strip()
     if explicit and explicit != "00000000-0000-0000-0000-000000000000":
         if pve_db.db_encounter_scene_exists(explicit, db):
-            return explicit
+            return tame_objective_scene(db, objective, explicit)
     objective_type = str(objective.get("type") or "").lower()
     if objective_type not in {"encounter", "dungeon"}:
         return None
@@ -673,9 +674,26 @@ def _quest_encounter_is_pending(db, champ_id, scene_guid):
             continue
         if 0 <= index < len(objectives):
             expected = objectives[index].get("encounter")
+            if expected:
+                expected = tame_objective_scene(db, objectives[index], expected)
             if expected and str(expected) == str(scene_guid):
                 return True
     return False
+
+
+def _reopen_pending_quest_encounters(db, champ_id, state):
+    """Re-open a completed encounter node the active quest still needs (#22).
+
+    Before the Tamed objective was re-linked to its capture scene, a win on
+    that scene completed the node although the objective stayed open.
+    """
+    for loc in state.get("VisLocs") or []:
+        data = loc.get("Data") or {}
+        if (data.get("completed") and data.get("type") == "Encounter" and
+                data.get("encounter") and
+                _quest_encounter_is_pending(db, champ_id, data["encounter"])):
+            data["completed"] = False
+            data["repeatable"] = True
 
 
 # Per-race AZ0 starter campaign config.
@@ -1983,6 +2001,27 @@ def _hydrate_az1_area_scene_metadata(db, locations, champ_id=None, state=None):
             # to Encounter without a node-specific special case.
             prelude = (None if "PANORAMA" in upper_name else
                        _az1_pre_encounter_conversation(db, node, champ_id))
+            runtime = (pve_db.db_encounter_scene_runtime(guid, db)
+                       if prelude else None)
+            if runtime is not None and not runtime[4]:
+                # Without an AI deck there is no battle behind the prelude:
+                # the conversation is the whole visit (Node033 Indigo River,
+                # issue #23).  Promoting it to an Encounter made the client
+                # build a champion panel for a scene with no players and
+                # throw.  A finished prelude from older states completes it.
+                done = bool(data.get("completed") or
+                            data.get("pre_encounter_completed"))
+                data.update({
+                    "type": "Convo",
+                    "conversationId": prelude,
+                    "encounter": None,
+                    "pre_encounter": False,
+                    "pre_encounter_completed": False,
+                    "completed": done,
+                    "repeatable": False,
+                    "autostart": not done,
+                })
+                continue
             # Once the authored prelude is closed, keep the node as an
             # Encounter so the player can start the battle.  The completion
             # marker prevents hydration/reconnects from reopening the
@@ -2919,6 +2958,7 @@ def _sync_az1_quest_gates(db, champ_id, state):
     before = json.dumps(state, sort_keys=True)
     _repair_az0_leftovers_in_area(state)
     _reopen_failed_encounters(state)
+    _reopen_pending_quest_encounters(db, champ_id, state)
     _backfill_visited_quest_starts(db, champ_id, state)
     hooks = pve_db.db_active_quest_hooks(champ_id, conn=db)
     for _quest_id, hook_name in hooks:

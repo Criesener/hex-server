@@ -1795,6 +1795,102 @@ def test_tamed_capture_pushes_the_quest_progress():
 
 
 
+WATER_ELEMENTAL = "a9e9e040-de92-475a-9970-be039c400cef"
+FOUL_FAE = "f6f3074b-a416-4400-9b74-20d72406a846"
+INDIGO_RIVER = "1d67638c-6068-465c-9e52-419047853310"
+
+
+def test_bubblebee_objective_points_at_its_capture_scene():
+    """Issue #22: the client data links "Tame Bubblebee" to Foul Fae, which
+    has no Bubblebee; the capture battle is Node 31 Water Elemental."""
+    import static
+    db, path = cloned_db()
+    try:
+        objectives = json.loads(db.execute(
+            "SELECT objectives_json FROM quest_templates "
+            "WHERE script_name='az01_tamed'").fetchone()[0])
+        links = {o["id"]: o.get("encounter") for o in objectives}
+        assert links["Tame3"] == WATER_ELEMENTAL, links
+        assert links["Tame1"] == "150b0ed9-a5e0-4729-81d8-764fa237c4e4", links
+        stale = {"id": "Tame3", "title": "Tame Bubblebee and win match",
+                 "type": "Encounter", "encounter": FOUL_FAE}
+        assert static.tame_objective_scene(db, stale, FOUL_FAE) == WATER_ELEMENTAL
+
+        def captures(scene):
+            return any((r.get("end_of_game_condition") or {}).get("type") ==
+                       "void_tamed_troop"
+                       for r in campaign._scene_reward_records(db, scene))
+        assert captures(WATER_ELEMENTAL)
+        assert not captures(FOUL_FAE)
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def test_won_capture_node_reopens_while_its_objective_is_pending():
+    """Issue #22: an old save completed Node031 although Tame Bubblebee is
+    still the active objective (stored with the stale Foul Fae link)."""
+    db, path = cloned_db()
+    try:
+        campaign._ensure_quest_campaign(db, 6, "AREA", "az01_tamed")
+        quest_id, raw = campaign.pve_db.db_campaign_state_rows(
+            6, "QUEST", db, template_name="az01_tamed")[0]
+        quest = json.loads(raw)
+        flags = quest.setdefault("Flags", {})
+        objectives = flags.get("_quest_objectives") or []
+        tame3 = next(o for o in objectives if o.get("id") == "Tame3")
+        tame3["encounter"] = FOUL_FAE
+        flags["_quest_objectives"] = objectives
+        flags["_quest_objective_idx"] = objectives.index(tame3)
+        db.execute("UPDATE campaigns SET state_json=? WHERE id=?",
+                   (json.dumps(quest), quest_id))
+        db.commit()
+        state = {"VisLocs": [{"Data": {
+            "node": "Node031", "type": "Encounter", "encounter": WATER_ELEMENTAL,
+            "completed": True, "repeatable": False}}, {"Data": {
+            "node": "Node029", "type": "Encounter", "encounter": FOUL_FAE,
+            "completed": True, "repeatable": False}}]}
+        campaign._reopen_pending_quest_encounters(db, 6, state)
+        node31, other = (loc["Data"] for loc in state["VisLocs"])
+        assert node31["completed"] is False and node31["repeatable"] is True
+        assert other["completed"] is True
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def test_indigo_river_prelude_is_a_conversation_not_a_battle():
+    """Issue #23: Node033's scene has no AI deck; its only conversation is
+    the whole visit.  Promoting it to an Encounter crashed the client."""
+    db, path = cloned_db()
+    try:
+        _area_id, state = area_state(db)
+        locs = {loc["Data"].get("node"): loc["Data"] for loc in state["VisLocs"]}
+        fresh = dict(locs["Node033"], type="Encounter", encounter=None,
+                     completed=False, conversationId=None)
+        for key in ("pre_encounter", "pre_encounter_completed"):
+            fresh.pop(key, None)
+        stuck = dict(fresh, encounter=INDIGO_RIVER, pre_encounter=True,
+                     pre_encounter_completed=True, autostart=True)
+        battle = dict(locs["Node009"], type="Encounter", completed=False,
+                      conversationId=None)
+        for key in ("pre_encounter", "pre_encounter_completed"):
+            battle.pop(key, None)
+        rows = [{"Data": fresh}, {"Data": stuck}, {"Data": battle}]
+        campaign._hydrate_az1_area_scene_metadata(db, rows)
+        fresh, stuck, battle = (row["Data"] for row in rows)
+        assert fresh["type"] == "Convo" and fresh["encounter"] is None, fresh
+        assert fresh["conversationId"] and fresh["autostart"] is True, fresh
+        assert not fresh.get("pre_encounter"), fresh
+        assert stuck["type"] == "Convo" and stuck["completed"] is True, stuck
+        assert stuck["encounter"] is None and not stuck["autostart"], stuck
+        # A real battle with a prelude keeps its pre-encounter flow.
+        assert battle.get("pre_encounter") is True, battle
+    finally:
+        db.close()
+        os.unlink(path)
+
+
 def test_campaign_game_end_cleans_up_once():
     """Issue #8: the campaign game end raised NameError before cleaning the
     session, so a second result pass re-ran the Crayburn step and finished
@@ -1950,6 +2046,9 @@ if __name__ == "__main__":
         test_fortune_of_blood_resolves_both_authored_abilities,
         test_only_closing_quest_conversations_are_turn_ins,
         test_unlocked_west_bridge_visit_survives_the_tamed_gate,
+        test_bubblebee_objective_points_at_its_capture_scene,
+        test_won_capture_node_reopens_while_its_objective_is_pending,
+        test_indigo_river_prelude_is_a_conversation_not_a_battle,
     ]
     for test in tests:
         test()

@@ -11,6 +11,7 @@ moves on.
 import json
 import hashlib
 import os
+import re
 import shutil
 import sqlite3
 
@@ -1562,6 +1563,45 @@ Path_NodeB16_NodeB17
 """.split()
 
 
+def tame_objective_scene(db, objective, scene_guid=None):
+    """Return the scene that hosts a ``Tame <creature> and win match`` capture.
+
+    The client data links "Tame Bubblebee" to Foul Fae, a scene without any
+    Bubblebee; the capture battle is the scene whose authored "Tame
+    Bubblebee" mod names the creature and which has an AI deck.  The
+    authored link is kept whenever its own scene carries the matching mod.
+    """
+    title = objective.get("title") if isinstance(objective, dict) else None
+    match = re.match(r"\s*(tame\s+.+?)\s+and\s+win\b", str(title or ""), re.I)
+    if not match:
+        return scene_guid
+    wanted = " ".join(match.group(1).lower().split())
+
+    def hosts(mods_json, deck_guid):
+        if not deck_guid:
+            return False
+        try:
+            mods = json.loads(mods_json or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        return any(isinstance(mod, dict) and
+                   " ".join(str(mod.get("title") or "").lower().split()) == wanted
+                   for mod in (mods if isinstance(mods, list) else []))
+
+    if scene_guid:
+        row = db.execute(
+            "SELECT mods_json, ai_deck_guid FROM encounter_scenes WHERE guid=?",
+            (scene_guid,)).fetchone()
+        if row and hosts(*row):
+            return scene_guid
+    for guid, mods_json, deck_guid in db.execute(
+            "SELECT guid, mods_json, ai_deck_guid FROM encounter_scenes "
+            "WHERE name LIKE 'AZ 1 - NODE %' ORDER BY name").fetchall():
+        if hosts(mods_json, deck_guid):
+            return guid
+    return scene_guid
+
+
 def _path_seed_rows(template, path_names):
     rows = []
     for path in path_names:
@@ -2134,23 +2174,6 @@ def ensure_schema(db):
     # campaign scene resolves to an encounter deck whose card list is absent,
     # and setup falls back to template-less placeholder cards.
     try:
-        # Resolve the Tamed encounter set from the quest objectives rather
-        # than maintaining a second list of encounter names/GUIDs. This keeps
-        # existing databases and freshly extracted seeds aligned if the quest
-        # gains another creature objective.
-        tamed_scene_guids = set()
-        tamed_row = db.execute(
-            "SELECT objectives_json FROM quest_templates "
-            "WHERE script_name='az01_tamed' LIMIT 1"
-        ).fetchone()
-        try:
-            tamed_objectives = json.loads(tamed_row[0] or "[]") if tamed_row else []
-        except (TypeError, ValueError, json.JSONDecodeError):
-            tamed_objectives = []
-        for objective in tamed_objectives if isinstance(tamed_objectives, list) else []:
-            if isinstance(objective, dict) and objective.get("encounter"):
-                tamed_scene_guids.add(str(objective["encounter"]).lower())
-
         _ensure_column(db, "encounter_scenes", "ai_champion_guid", "TEXT")
         _ensure_column(db, "encounter_scenes", "ai_deck_personality",
                        "TEXT DEFAULT NULL")
@@ -2193,6 +2216,33 @@ def ensure_schema(db):
             )
             db.commit()
             print("Seeded missing campaign encounter scenes and deck cards")
+        # Resolve the Tamed encounter set from the quest objectives rather
+        # than maintaining a second list of encounter names/GUIDs. This keeps
+        # existing databases and freshly extracted seeds aligned if the quest
+        # gains another creature objective.
+        tamed_scene_guids = set()
+        tamed_row = db.execute(
+            "SELECT objectives_json FROM quest_templates "
+            "WHERE script_name='az01_tamed' LIMIT 1"
+        ).fetchone()
+        try:
+            tamed_objectives = json.loads(tamed_row[0] or "[]") if tamed_row else []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            tamed_objectives = []
+        tamed_relinked = False
+        for objective in tamed_objectives if isinstance(tamed_objectives, list) else []:
+            if isinstance(objective, dict) and objective.get("encounter"):
+                scene = tame_objective_scene(db, objective, objective["encounter"])
+                if scene != objective["encounter"]:
+                    objective["encounter"] = scene
+                    tamed_relinked = True
+                tamed_scene_guids.add(str(scene).lower())
+        if tamed_relinked:
+            db.execute(
+                "UPDATE quest_templates SET objectives_json=? "
+                "WHERE script_name='az01_tamed'",
+                (json.dumps(tamed_objectives, sort_keys=True),))
+
         # Keep the authored AZ1 reward metadata up to date on existing
         # databases as well as freshly extracted seeds.  Preserve any
         # encounter-specific entries (card choices/conditional captures).
@@ -2280,6 +2330,12 @@ def ensure_schema(db):
                 rewards["gold"] = amount
                 rewards["xp"] = amount
                 rewards["one_time"] = False
+                # A scene that lost its Tamed link drops the capture reward.
+                if any(isinstance(record, dict) and str(
+                        (record.get("end_of_game_condition") or {}).get("type")
+                        or "").lower() == "void_tamed_troop"
+                       for record in rewards.get("end_of_game_rewards") or []):
+                    rewards.pop("end_of_game_rewards", None)
             db.execute("UPDATE encounter_scenes SET rewards_json=? WHERE guid=?",
                        (json.dumps(rewards), eguid))
         db.commit()
