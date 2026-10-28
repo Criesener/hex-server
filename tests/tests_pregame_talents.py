@@ -363,10 +363,119 @@ def test_ai_owned_reattach_builds_combat_phase_facts():
         os.unlink(path)
 
 
+VIOLENT_ABILITY = "458f48d4-a529-53f8-3e8c-dc7198ab3d95"
+# Deploy: "target troop gets +4/+4 and Crush" (explicit target template).
+TARGETED_DEPLOY_ABILITY = "01b16d84-909a-92b7-9258-68d4e78646f2"
+
+
+def test_violent_untargeted_trigger_is_shown_as_an_activation():
+    """Orc Violent animates on the champion instead of vanishing (issue #21).
+
+    The talent is a GameStarted trigger with no explicit target (C#
+    ``AbilityTemplate.UntargetedTrigger``).  Its random hand troop is only
+    chosen while the auto-passed chain item resolves; the setup packet keeps
+    exactly one ``AbilityPushedOnChain`` for it, flagged IgnoresChain and
+    carrying that troop, and no chain push/pop for any setup item.  A
+    targeted trigger in the same setup chain stays hidden as before.
+    """
+    db, path = _database_copy()
+    try:
+        from gamedata import DEFAULT_RECORD_STORE, ability_graph
+        from hconnect_server import HCPHandler
+        from rules_port.resolution import resolve_port_trigger
+        from tests.tests_combat import HandlerStub, SessionStub
+        import game_engine
+
+        assert ability_graph(DEFAULT_RECORD_STORE,
+                             VIOLENT_ABILITY).untargeted_trigger
+        assert not ability_graph(DEFAULT_RECORD_STORE,
+                                 TARGETED_DEPLOY_ABILITY).untargeted_trigger
+
+        template_guid, card_type = db.execute(
+            "SELECT guid, card_type FROM card_templates "
+            "WHERE card_type='Troop' LIMIT 1").fetchone()
+        db.execute(
+            "INSERT INTO game_cards "
+            "(user_id,session_id,card_uid,card_template_id,location,position,"
+            "card_type,template_guid,card_state,card_abilities,card_attributes) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (5, 1, 13057, template_guid, "hand", 0, card_type,
+             template_guid, 0, "[]", 0))
+        db.commit()
+
+        handler = HandlerStub(db)
+        champion = handler._player_champ_scid
+        pl_t = game_engine.UID.make(244, 5)
+        ai_t = game_engine.UID.make(3, 1000)
+        setup = game_engine.Game(1, pl_t, ai_t)
+        setup.push_turn_phase(game_engine.ETurnPhases.StartGame, pl_t, pl_t)
+        event_start = len(setup.events)
+        # The dispatcher announces both triggers as ordinary chain items.
+        setup.push_ability_on_chain(
+            champion, game_engine.ResourceId.from_str(VIOLENT_ABILITY),
+            ability_instance_id=7)
+        setup.push_ability_on_chain(
+            champion, game_engine.ResourceId.from_str(TARGETED_DEPLOY_ABILITY),
+            ability_instance_id=8,
+            target_card_ids=[game_engine.SessionCardId(game_engine.UID(13057))])
+
+        # The auto-pass resolves each item into its own fresh Game, which
+        # ``chain_send`` folds into the opening packet while setup runs.
+        session = SessionStub()
+        session._game_started_setup_game = setup
+        hcp = object.__new__(HCPHandler)
+        for instance_id in (8, 7):
+            item_game = game_engine.Game(1, pl_t, ai_t)
+            if instance_id == 7:
+                bstate = {"player_health": 20, "ai_health": 20,
+                          "turn_number": 1, "_next_instance_id": 9}
+                resolve_port_trigger(
+                    handler, item_game, session, db, pl_t, ai_t, bstate,
+                    {"kind": "trigger", "ability_guid": VIOLENT_ABILITY,
+                     "source_uid": int(champion.uid.uid64),
+                     "source_owner_uid": 5, "instance_id": 7})
+            item_game.push_top_of_chain_resolved(instance_id)
+            item_game.push_removed_top_of_chain(instance_id)
+            if instance_id == 7:
+                item_game.push_chain_empty()
+            hcp.chain_send(session, item_game, pl_t, ai_t)
+            assert not item_game.events, item_game.events
+        assert setup.ability_targets.get(7) == [13057], setup.ability_targets
+        assert any(isinstance(event, game_engine.CardUpdatedSessionEventArgs)
+                   and int(event.session_card_id.uid.uid64) == 13057
+                   for event in setup.events), "Rage update was not folded"
+
+        assert hcp._suppress_completed_game_started_chain_events(
+            setup, event_start) == 1
+        pushed = [event for event in setup.events if isinstance(
+            event, game_engine.AbilityPushedOnChainSessionEventArgs)]
+        assert len(pushed) == 1, pushed
+        assert pushed[0].ability_instance_id == 7
+        assert pushed[0].ignores_chain is True
+        assert [int(target.uid.uid64)
+                for target in pushed[0].target_card_ids] == [13057]
+        assert not [event for event in setup.events if isinstance(event, (
+            game_engine.TopOfChainResolvedSessionEventArgs,
+            game_engine.RemovedTopOfChainSessionEventArgs,
+            game_engine.ChainEmptySessionEventArgs))]
+        # The activation is announced before the effect it caused.
+        updated = next(index for index, event in enumerate(setup.events)
+                       if isinstance(event,
+                                     game_engine.CardUpdatedSessionEventArgs)
+                       and int(event.session_card_id.uid.uid64) == 13057)
+        assert setup.events.index(pushed[0]) < updated
+        assert isinstance(setup.events[0],
+                          game_engine.TurnPhaseUpdatedSessionEventArgs)
+    finally:
+        db.close()
+        os.unlink(path)
+
+
 if __name__ == "__main__":
     test_skylak_uses_original_deck_size_for_both_talents()
     test_expendable_lives_grants_and_resolves_one_shot_deathcry()
     test_devoted_cost_talent_applies_once_via_trigger()
     test_starting_charges_survive_reattach_and_resource_plays()
     test_ai_owned_reattach_builds_combat_phase_facts()
+    test_violent_untargeted_trigger_is_shown_as_an_activation()
     print("PASS Skylak PreGame deck insertions")

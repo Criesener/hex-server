@@ -74,6 +74,18 @@ class AbilityGraph:
     source: AbilityTemplate
     serialized_tac: str = ""
 
+    @property
+    def untargeted_trigger(self) -> bool:
+        """C# ``AbilityTemplate.UntargetedTrigger``.
+
+        A triggered ability none of whose target templates is explicit.  The
+        client's ``AbilityInstance.IgnoresChain`` treats it as chain-less: it
+        is announced with ``AbilityPushedOnChain.IgnoresChain`` (a card
+        activation animation) and never opens a priority window.
+        """
+        return bool(self.trigger_event_type) and not any(
+            target.explicit for target in self.targets)
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "guid": self.guid,

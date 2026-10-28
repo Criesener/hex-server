@@ -9103,19 +9103,26 @@ class HCPHandler(ProfileStreamMixin):
                 port.rehydrate_projected_chain()
             if not port.chain.is_empty:
                 resolved = 0
-                for _ in range(256):
-                    action = port.action_stack.peek()
-                    if action is None:
-                        break
-                    from rules_port.kernel import PriorityWindowAction
-                    if isinstance(action, PriorityWindowAction):
-                        if not port.auto_pass_internal_priority(port.player_ids):
+                # Every chain item resolves into its own fresh Game; collect
+                # them into the opening packet (see ``chain_send``).
+                session._game_started_setup_game = game
+                try:
+                    for _ in range(256):
+                        action = port.action_stack.peek()
+                        if action is None:
                             break
-                    elif not port.tick():
-                        break
-                    resolved += 1
-                    if port.chain.is_empty:
-                        break
+                        from rules_port.kernel import PriorityWindowAction
+                        if isinstance(action, PriorityWindowAction):
+                            if not port.auto_pass_internal_priority(
+                                    port.player_ids):
+                                break
+                        elif not port.tick():
+                            break
+                        resolved += 1
+                        if port.chain.is_empty:
+                            break
+                finally:
+                    session._game_started_setup_game = None
                 port.persist()
                 if resolved:
                     log_req(f"    Auto-passed {resolved} native GameStarted "
@@ -9178,8 +9185,17 @@ class HCPHandler(ProfileStreamMixin):
         events remain in the packet; only the transient chain presentation is
         removed.
 
+        An untargeted trigger (C# ``AbilityTemplate.UntargetedTrigger``, e.g.
+        a race talent such as Violent) is never a chain item in the client:
+        ``AbilityInstance.IgnoresChain`` is true for it and the original
+        announced it with ``AbilityPushedOnChain.IgnoresChain``, which plays
+        the source card's activation animation and fires projectiles at its
+        targets without a chain card or Resolve prompt.  Keep that one event,
+        marked chain-less and carrying the targets the ability resolved.
+
         ``event_start`` scopes this to events created by GameStarted setup and
-        preserves any earlier events in the transaction.
+        preserves any earlier events in the transaction.  Returns the number
+        of activation events kept.
         """
         chain_event_types = (
             game_engine.AbilityPushedOnChainSessionEventArgs,
@@ -9187,12 +9203,48 @@ class HCPHandler(ProfileStreamMixin):
             game_engine.RemovedTopOfChainSessionEventArgs,
             game_engine.ChainEmptySessionEventArgs,
         )
+        session_id = int(getattr(getattr(game, "session_id", None), "uid64",
+                                 getattr(game, "session_id", 0)) or 0)
+        resolved_targets = getattr(game, "ability_targets", None) or {}
         prefix = game.events[:event_start]
-        setup_events = game.events[event_start:]
-        game.events = prefix + [
-            event for event in setup_events
-            if not isinstance(event, chain_event_types)
-        ]
+        kept = []
+        activations = 0
+        for event in game.events[event_start:]:
+            if (isinstance(event,
+                           game_engine.AbilityPushedOnChainSessionEventArgs)
+                    and self._game_started_untargeted_trigger(
+                        session_id, event)):
+                event.ignores_chain = True
+                if not event.target_card_ids:
+                    event.target_card_ids = [
+                        game_engine.SessionCardId(game_engine.UID(uid))
+                        for uid in resolved_targets.get(
+                            int(event.ability_instance_id), ())]
+                kept.append(event)
+                activations += 1
+            elif not isinstance(event, chain_event_types):
+                kept.append(event)
+        game.events = prefix + kept
+        return activations
+
+    def _game_started_untargeted_trigger(self, session_id, event):
+        """Whether a setup chain event announces a visible untargeted trigger.
+
+        Hidden encounter battleboard sources stay suppressed, exactly like the
+        inline IgnoresChain trigger path: the client would otherwise create a
+        card view for a card that is not on the board.
+        """
+        guid = str(getattr(getattr(event, "ability_template_id", None),
+                           "guid", "") or "")
+        graph = _records_ability_graph(self, guid) if guid else None
+        if graph is None or not graph.untargeted_trigger:
+            return False
+        source = getattr(getattr(event.source_card_id, "uid", None),
+                         "uid64", None)
+        if source is None:
+            return False
+        from pvp_db import db_card_is_battleboard
+        return not db_card_is_battleboard(session_id, int(source))
 
     # --- rules_port.chain_items host hooks (Practice/PvE projection) -------
     def chain_load(self, session):
@@ -9207,6 +9259,18 @@ class HCPHandler(ProfileStreamMixin):
         return self._fresh_game(session, player_uid, ai_uid, state)
 
     def chain_send(self, session, game, player_uid, ai_uid):
+        setup_game = getattr(session, "_game_started_setup_game", None)
+        if setup_game is not None and setup_game is not game:
+            # GameStarted setup resolves its chain before the opening packet
+            # is sent.  Fold each auto-passed item into that packet instead
+            # of sending it on its own: a separate packet also drained the
+            # setup events, so the completed setup chain could not be
+            # presented as one opening sequence.
+            setup_game.events.extend(game.events)
+            game.events = []
+            setup_game.ability_targets.update(
+                getattr(game, "ability_targets", None) or {})
+            return
         self._send_battle_events(session, game, player_uid)
 
     def chain_card_data(self, game, scid, template_guid):
@@ -13410,27 +13474,31 @@ class HCPHandler(ProfileStreamMixin):
                     not bstate.get("pending_trigger") and
                     not bstate.get("pending_discard_ability") and
                     not bstate.get("pending_conversation")):
-                self._suppress_completed_game_started_chain_events(
-                    game, game_started_event_start)
+                setup_activations = \
+                    self._suppress_completed_game_started_chain_events(
+                        game, game_started_event_start)
+                if setup_activations:
+                    # An untargeted trigger's activation animation plays on
+                    # its source card view (the champion for a race
+                    # talent).  The mulligan answer proves the battle UI is
+                    # live, so place the champions on the board first in
+                    # this same packet: ``OnAbilityPushedOnChain`` then
+                    # animates the card where it stays, and no later
+                    # one-time announcement re-builds it mid-animation.
+                    setattr(session, "_client_in_battle",
+                            getattr(session, "session_id", None))
             # GameStarted abilities may change the DB-backed battle state.  In
             # particular, encounter-scene battleboard cards such as Savage
             # Lord's Resource Rich grant both current and permanent resources.
             # Persist after resolving them so reconnects and the next phase
             # load the same 1/1 state that was sent in the setup packet.
             _be.save_state(session, bstate)
-            # Send the StartGame packet (one phase per packet).
-            if game.events:
-                pkt = game.make_network_packet(pl_t)
-                dw = encode_datawrapper(0, 3055, compress_gzip(encode_sync_event(pkt)), 1, "00000000-0000-0000-0000-000000000000")
-                self._game_scnt = max(self._game_scnt, self.scnt) + 1
-                self.scnt = self._game_scnt
-                gs_inst = str(session.server_id)
-                self.send({
-                    "issuer": f"0.0.0.0.ServiceGameSession.{SERVICE_GAME_SESSION_UID}.{session.session_id}.{self.scnt}",
-                    "target": "ServiceGameSession", "instance": gs_inst, "reqid": 0, "c": 0, "conh": 0, "sid": self.sid,
-                }, dw)
-                self._event_q.append((self.scnt, dw, {}))
-                log_req(f"    Pushed StartGame phase after keep ({len(dw)}b)")
+            # Send the StartGame packet (one phase per packet).  The normal
+            # packet boundary also drains RulesPort's unpublished projections
+            # and applies the hand-visibility/owner projections, exactly as
+            # the setup events received before chain items were folded in.
+            if self._send_battle_events(session, game, pl_t):
+                log_req("    Pushed StartGame phase after keep")
             # Auto-pass non-stop phases (StartTurn -> Ready -> Prep -> Draw)
             # until the next stop phase (FirstMainPhase).  PvP sessions
             # advance via route_pvp_pass instead — calling the AI-turn

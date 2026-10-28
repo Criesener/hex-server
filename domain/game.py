@@ -222,6 +222,12 @@ class Game:
         self.deck_sleeve_ids: Dict[int, str] = {}
 
         self.events: List[SessionEventArgs] = []
+        # Card targets each top-level ability instance actually resolved
+        # against (instance id -> card UIDs).  An automatic or random target
+        # is only chosen during resolution, after its AbilityPushedOnChain
+        # was queued; the projection uses this to fill that event's
+        # TargetCardIds (C# ``AbilityInstance.GetTargetList``).
+        self.ability_targets: Dict[int, List[int]] = {}
 
         self.script_commands: List[dict] = []
         self.script_index = 0
@@ -539,6 +545,19 @@ class Game:
         ev.target_card_ids = target_card_ids or []
         ev.ignores_chain = ignores_chain
         self._push(ev)
+
+    def record_ability_targets(self, ability_instance_id: int,
+                               card_uids) -> None:
+        """Remember the card targets one ability instance resolved."""
+        uids: List[int] = []
+        for uid in card_uids or ():
+            try:
+                value = int(uid)
+            except (TypeError, ValueError):
+                continue
+            if value not in uids:
+                uids.append(value)
+        self.ability_targets[int(ability_instance_id)] = uids
 
     def push_top_of_chain_resolved(self, ability_instance_id: int):
         ev = self._make_event(TopOfChainResolvedSessionEventArgs)

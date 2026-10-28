@@ -1325,6 +1325,9 @@ class PortAbilityResolver:
                 self.battle_state.pop("_rules_port_strict_effects", None)
             else:
                 self.battle_state["_rules_port_strict_effects"] = previous_strict
+        if not int(self.battle_state.get("rules_port_resolution_depth", 0)
+                   or 0):
+            _record_resolved_targets(self.game, ability)
         port_session = getattr(self.game_session, "_rules_port_session", None)
         if self.battle_state.get("pending_discard_ability") and port_session is not None:
             pending = self.battle_state.get("pending_discard_continuation")
@@ -1373,6 +1376,39 @@ class PortAbilityResolver:
         if self.battle_state.get("resolution_paused"):
             return AbilityResolutionState.WAITING_FOR_INPUT
         return AbilityResolutionState.COMPLETED
+
+
+def _record_resolved_targets(game, ability):
+    """Publish a top-level ability's resolved card targets on ``game``.
+
+    Mirrors C# ``AbilityInstance.GetTargetList``: every card held by the
+    activation's target instances, in slot order.  Player targets are not
+    cards there (``AbilityTargetInstance.m_PlayerIds``), so PlayerTargetTemplate
+    slots are skipped even though the port resolves them to the champion.
+    """
+    record = getattr(game, "record_ability_targets", None)
+    if not callable(record):
+        return
+    target_map = getattr(getattr(ability, "activation", None),
+                         "target_map", None) or {}
+    specs = tuple(getattr(getattr(ability, "metadata", None),
+                          "targets", ()) or ())
+    slots = []
+    for key, values in target_map.items():
+        try:
+            slots.append((int(key), values))
+        except (TypeError, ValueError):
+            continue
+    uids = []
+    for index, values in sorted(slots, key=lambda slot: slot[0]):
+        if (index < len(specs) and str(getattr(
+                specs[index], "target_kind", "") or "").endswith(
+                    "PlayerTargetTemplate")):
+            continue
+        if not isinstance(values, (tuple, list, set)):
+            values = (values,)
+        uids.extend(_uids(values))
+    record(int(getattr(ability, "instance_id", 0) or 0), uids)
 
 
 def build_port_ability(ability_guid, source_uid, owner_id, *, instance_id=1,
