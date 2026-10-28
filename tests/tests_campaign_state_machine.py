@@ -220,6 +220,45 @@ def test_failed_and_completed_encounters_are_reopened():
     assert state["VisLocs"][1]["Data"]["completed"] is True
 
 
+def test_startloc_on_the_already_active_location_keeps_it_active():
+    """Issue #11: ALoc stores the location name; re-entering the same node
+    after a direct path arrival must not be treated as leaving it."""
+    db, path = cloned_db()
+    original_send_response = campaign._send_response
+    original_push_campupdate = campaign.push_campupdate
+    original_push_campspawn = campaign.push_campspawn
+    try:
+        area_id, state = area_state(db)
+        west = next(loc["Data"] for loc in state["VisLocs"]
+                    if loc["Data"].get("node") == "Node015")
+        west.update({"type": "Convo", "completed": False, "repeatable": False,
+                     "visible": True, "enabled": True, "turninquest": True,
+                     "conversationId": "5e5ec1cd-c869-43e8-82d4-417021954440"})
+        state["ALoc"] = west["name"]
+        state["LastNode"] = "Node015"
+        db.execute("UPDATE campaigns SET state_json=? WHERE id=?",
+                   (json.dumps(state), area_id))
+        db.commit()
+        campaign._send_response = lambda *args, **kwargs: None
+        campaign.push_campupdate = lambda *args, **kwargs: None
+        campaign.push_campspawn = lambda *args, **kwargs: None
+        handler = SimpleNamespace(_log_req=lambda *_args: None)
+        campaign._handle_locaction(
+            handler, db,
+            {"CampID": area_id, "RAct": 0, "Loc": west["name"], "Params": []},
+            0, "", 0, "ServiceCampaign", "253", 0, 0)
+        after = json.loads(db.execute(
+            "SELECT state_json FROM campaigns WHERE id=?", (area_id,)
+        ).fetchone()[0])
+        assert after["ALoc"] == west["name"], after["ALoc"]
+    finally:
+        campaign._send_response = original_send_response
+        campaign.push_campupdate = original_push_campupdate
+        campaign.push_campspawn = original_push_campspawn
+        db.close()
+        os.unlink(path)
+
+
 def test_area_state_repair_drops_az0_trainer_leftovers():
     """Issue #1: saves that already stored the trainer are repaired."""
     trainer = next(iter(campaign._AZ0_RACE_CONFIG.values()))["trainer_npc"]
@@ -1879,6 +1918,7 @@ if __name__ == "__main__":
         test_winston_step1_starts_cross_the_river,
         test_area_gameend_keeps_the_hero_on_the_encounter_node,
         test_area_state_repair_drops_az0_trainer_leftovers,
+        test_startloc_on_the_already_active_location_keeps_it_active,
         test_savage_lord_defeat_conversation_keeps_the_encounter_open,
         test_failed_and_completed_encounters_are_reopened,
         test_visited_winston_backfills_the_missing_cross_the_river_quest,

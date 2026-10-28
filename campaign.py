@@ -7576,7 +7576,12 @@ def _handle_locaction(handler, db, env_json, comp, session_id,
                         ((l.get("Data") or {}) for l in state.get("VisLocs", [])
                          if (l.get("Data") or {}).get("node") == node),
                         requested)
-            if not blocked_encounter and previous and previous != node:
+            # ALoc holds a location *name* while ``node`` is a map-node id;
+            # compare resolved nodes, or re-entering the location a direct
+            # path arrival already made active reads as leaving it and
+            # blocks it (issue #11: Weston at the west bridge never started).
+            if (not blocked_encounter and previous and
+                    (previous_node or previous) != (requested_node or node)):
                 previous_data = next(
                     ((l.get("Data") or {}) for l in state.get("VisLocs", [])
                      if ((l.get("Data") or {}).get("node") in
