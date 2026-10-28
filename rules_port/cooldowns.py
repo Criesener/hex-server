@@ -143,7 +143,7 @@ def decrement_and_project_ready_cooldowns(db, session, handler, game,
         }
         game.push_card_updated(
             scid, owner_uid(owner, player_uid, ai_uid, battle_state),
-            game_engine.ECardCollections.None_,
+            game_engine.ECardCollections.Champions,
             game_engine.ECardTypes.Champion,
             cooldown_counts=cdef.cooldown_counts)
     return card_uids, champions

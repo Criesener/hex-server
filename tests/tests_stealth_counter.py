@@ -72,13 +72,13 @@ def test_one_shot_talent_adds_a_stealth_counter_to_the_champion():
     # The champion HUD derives its Stealth icon from the cached
     # CardRepresentation counters, which the client only stores from a
     # CardUpdated — so the counter change has to be published that way too,
-    # with the collection the champion already sits in (None).
+    # with the collection the champion sits in for the whole game (#18).
     updates = [event for event in game.events
                if type(event).__name__ == "CardUpdatedSessionEventArgs"
                and int(event.session_card_id.uid.uid64) == player_champ]
     assert updates, [type(event).__name__ for event in game.events]
     published = updates[-1]
-    assert published.collection == game_engine.ECardCollections.None_
+    assert published.collection == game_engine.ECardCollections.Champions
     assert [str(template.guid) for template in published.counter_templates] == [
         STEALTH_COUNTER_GUID]
     assert [int(count) for count in published.counter_counts] == [1]

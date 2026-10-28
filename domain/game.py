@@ -336,17 +336,17 @@ class Game:
         cdef = self.card_defs.get(cid)
         effective_card_type = card_type or (
             cdef.card_type if cdef else ECardTypes.Unknown)
-        # The original client uses CardUpdated.Collection to choose the
-        # card's visual home.  A champion already has a HUD view created by
-        # ChampionCardPlayed; changing its collection to Champions while an
-        # ability is on the chain makes UIBattle clone that view and leave a
-        # full-size champion card on the board when the chain item is removed.
-        # The initial CardUpdated(None) cache seed remains valid and is still
-        # allowed.  Suppress only later location-changing champion updates.
+        # The original server keeps champions in ECardCollections.Champions
+        # for the whole game, and the client relies on it: GetCollectionView
+        # homes them in the ChampionsView, and OnAbilityPushedOnChain clones
+        # an ability-only card for a chain item only when the source is not
+        # in collection None (issue #18).  The collection must never change
+        # mid-game -- a None -> Champions switch reads as a CardMoved and left
+        # a full-size champion card on the board -- so every champion
+        # CardUpdated carries Champions, whatever the call site passed.
         if (isinstance(effective_card_type, int) and
-                effective_card_type & ECardTypes.Champion and
-                collection == ECardCollections.Champions):
-            return False
+                effective_card_type & ECardTypes.Champion):
+            collection = ECardCollections.Champions
         ev = self._make_event(CardUpdatedSessionEventArgs)
         ev.player_id = player_uid
         ev.session_card_id = cid

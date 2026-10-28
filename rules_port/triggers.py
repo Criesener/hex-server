@@ -236,6 +236,8 @@ class NativeTriggerBackend:
             # authoritative equivalent for stored target lists at card scope.
             battle_state.pop("stored_targets_by_card_this_turn", None)
             battle_state.pop("stored_targets_this_turn", None)
+            from .statistics import start_turn_update_stats
+            start_turn_update_stats(battle_state)
         elif event_name == "CardDiscardedEvent":
             owner = int(event.source_player_id or 0)
             key = (f"cards_discarded_this_turn_{owner}"

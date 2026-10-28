@@ -337,6 +337,11 @@ def _records_ability_graph(handler, ability_guid) -> "AbilityGraph | None":
     return ability_graph(store, str(ability_guid).lower())
 
 
+def _ability_resource_cost(graph) -> int:
+    """An ability graph's authored resource (shard) cost, 0 when unknown."""
+    return int(getattr(getattr(graph, "costs", None), "activation", 0) or 0)
+
+
 @lru_cache(maxsize=8192)
 def _records_card_projection(template_guid):
     """Return the immutable printed card projection from the Records cache.
@@ -3157,7 +3162,7 @@ class HCPHandler(ProfileStreamMixin):
             # The CardDef's defense is the champion's live health (which is
             # what the HUD reports through ChampionHealth).
             game.push_card_updated(
-                scid, owner, game_engine.ECardCollections.None_,
+                scid, owner, game_engine.ECardCollections.Champions,
                 game_engine.ECardTypes.Champion, attack=0,
                 defense=int(getattr(
                     game, "ai_health" if is_ai else "player_health", 0) or 0),
@@ -5887,7 +5892,7 @@ class HCPHandler(ProfileStreamMixin):
                 card_def.defense = health
             owner_uid = pl_t if key == "player_health" else ai_t
             game.push_card_updated(
-                uid, owner_uid, game_engine.ECardCollections.None_,
+                uid, owner_uid, game_engine.ECardCollections.Champions,
                 game_engine.ECardTypes.Champion, defense=health,
                 template_id=template_guid)
         game.push_player_updated(
@@ -7704,6 +7709,13 @@ class HCPHandler(ProfileStreamMixin):
                 player_champ_uid = None
             if not self._champion_ability_available(
                     bstate, aid.guid, graph, source_uid=player_champ_uid):
+                continue
+            # The resource (shard) cost is authored only on the Records graph
+            # (m_ActivationCost); the talent/champion cost rows carry charges
+            # and spell points.  The activation gate (plan_ability_cost)
+            # rejects an unaffordable one, so never offer it (issue #17).
+            if _ability_resource_cost(graph) > int(
+                    bstate.get("player_resources", 0) or 0):
                 continue
             payable = self._champion_payment_available(
                 str(aid.guid), graph, target_data, cost_data)
@@ -9883,6 +9895,10 @@ class HCPHandler(ProfileStreamMixin):
             "", ability=None)
         active_champion_uid = context.champion_card_uid(active_owner)
         changes = advance(context, active_owner)
+        # StartTurnState.UpdateStats: "this turn" card statistics end with
+        # the turn even when no TurnStarted triggers are resolved here.
+        from rules_port.statistics import start_turn_update_stats
+        start_turn_update_stats(bstate)
         # Mark the lifecycle phase while TurnStarted triggers resolve so
         # temporary current-resource gains (e.g. Lithe Lyricist's +1) are
         # recorded as a start-turn bonus that Prep reapplies after its refill.
@@ -10109,11 +10125,8 @@ class HCPHandler(ProfileStreamMixin):
                 game.card_defs[scid] = game_engine.CardDef(
                     "Champion", game_engine.ECardTypes.Champion, 0, health,
                     health, [], abilities)
-            # Champions are cached as collection None (the battle-start
-            # seed); a Champions collection would be read as a move and
-            # leave a full-size champion card on the board.
             game.push_card_updated(
-                scid, owner_uid, game_engine.ECardCollections.None_,
+                scid, owner_uid, game_engine.ECardCollections.Champions,
                 game_engine.ECardTypes.Champion,
                 template_id=getattr(self, template_attr, None),
                 defense=int((bstate or {}).get(health_key, 20) or 20))
@@ -17293,10 +17306,10 @@ class HCPHandler(ProfileStreamMixin):
             game.push_player_updated(
                 ai_uid_t, deck_sleeve_id=ai_deck_sleeve_guid,
                 champ_id=getattr(self, "_ai_champ_scid", None))
-            game.push_card_updated(player_champ_id, pl_uid_t, game_engine.ECardCollections.None_,
+            game.push_card_updated(player_champ_id, pl_uid_t, game_engine.ECardCollections.Champions,
                                    game_engine.ECardTypes.Champion, attack=0, defense=player_starting_health,
                                    template_id=player_champ_guid)
-            game.push_card_updated(ai_champ_id, ai_uid_t, game_engine.ECardCollections.None_,
+            game.push_card_updated(ai_champ_id, ai_uid_t, game_engine.ECardCollections.Champions,
                                    game_engine.ECardTypes.Champion, attack=0, defense=ai_starting_health,
                                    template_id=ai_champ_guid)
 
@@ -20866,7 +20879,19 @@ class HCPHandler(ProfileStreamMixin):
                 log_req("    RulesPort boundary: refusing legacy fallback"
                         + ("" if native_boundary_intent else
                            " (unclassified transaction)"))
-                self._push_transaction_ack(session)
+                # A rejected ability activation (e.g. an unaffordable cost)
+                # leaves the client waiting for a priority window; a bare
+                # 3055 ack strands it (issue #17).  Re-send the current
+                # window the same way a RequestPrioritySync does.
+                resynced = False
+                if getattr(transaction, "is_ability_activate", False):
+                    try:
+                        resynced = bool(self._handle_priority_sync_transaction(
+                            session, transaction))
+                    except Exception as exc:
+                        log_req(f"    Rejected activation resync failed: {exc}")
+                if not resynced:
+                    self._push_transaction_ack(session)
                 handled = True
 
             # PlayerTransaction is fire-and-forget in the battle client. Its

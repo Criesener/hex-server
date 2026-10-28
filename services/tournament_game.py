@@ -2515,7 +2515,7 @@ def _pvp_run_phase_start(session, state, phase):
                     for guid, value in cooldowns.items()}
                 g.push_card_updated(
                     scid, _ge.UID.make(244, int(turn_uid)),
-                    _ECardCollections.None_, _ECardTypes.Champion,
+                    _ECardCollections.Champions, _ECardTypes.Champion,
                     cooldown_counts=cdef.cooldown_counts)
         my_champ_uid = int(champ_map.get(str(pid), 0))
         my_champ = _ge.SessionCardId(_ge.UID(my_champ_uid)) if my_champ_uid else None
@@ -3716,6 +3716,11 @@ def _pvp_add_champion_options(g, session, state, pid, pl_t):
         casting = int(row[3] or 0) if len(row) > 3 else 64
         if charges < cc or spell_points < effective_sc:
             continue
+        # The shard cost (m_ActivationCost) lives only on the Records graph
+        # (issue #17).
+        if graph is not None and int(getattr(graph.costs, "activation", 0)
+                                     or 0) > int(state.get(f"res_{pid}", 0) or 0):
+            continue
         # BasicAction powers are legal only in the controller's own main
         # phase, and never while a chain item is waiting to resolve. The
         # client keeps reading the most recent PlayerOptionList after a
@@ -3864,12 +3869,7 @@ def _pvp_add_champion_options(g, session, state, pid, pl_t):
             cdef.counters = counters
         g.push_card_updated(
             champ_scid, _ge.UID.make(244, pid),
-            # Champion updates in the HUD use the initial ``None_``
-            # collection.  ``Game.push_card_updated`` suppresses later
-            # ``Champions`` collection updates to prevent duplicate board
-            # views, which would otherwise silently drop this ability-cache
-            # refresh.
-            _ge.ECardCollections.None_, _ge.ECardTypes.Champion,
+            _ge.ECardCollections.Champions, _ge.ECardTypes.Champion,
             template_id=tpl_guid, defense=hp, counters=counters)
         # ``push_options`` already created the list that will own the
         # champion activation.  Move this definition in front of that list in
@@ -5268,7 +5268,7 @@ def push_pvp_game_start(handler, session, log_req=log_req):
     game1.push_player_updated(pl_t, champ_id=pchamp)
     game1.push_player_updated(opp_t, champ_id=achamp)
 
-    # 3. CardUpdated for champions — ECardCollections.None_ (matches PvE).
+    # 3. CardUpdated for champions — ECardCollections.Champions (matches PvE).
     for pid in pids:
         is_pl = (pid == player_pid)
         pt = pl_t if is_pl else opp_t
@@ -5277,7 +5277,7 @@ def push_pvp_game_start(handler, session, log_req=log_req):
         tg = cr[1] if cr else "00000000-0000-0000-0000-000000000000"
         hp = champ_health.get(pid, 20)
         handler._card_full_data(game1, ch_id, tg)
-        game1.push_card_updated(ch_id, pt, _ECardCollections.None_,
+        game1.push_card_updated(ch_id, pt, _ECardCollections.Champions,
                                 _ECardTypes.Champion, attack=0, defense=hp,
                                 template_id=tg)
         try:
@@ -9832,7 +9832,7 @@ def _pvp_activate_champion_ability(handler, session, inner_bytes, my_pid):
         cdef.cooldown_counts = cooldowns
         g.push_card_updated(
             _ge.SessionCardId(_ge.UID(my_champ_uid)), my_uid,
-            _ECardCollections.None_, _ECardTypes.Champion,
+            _ECardCollections.Champions, _ECardTypes.Champion,
             cooldown_counts=cooldowns)
     for sacrifice_uid in sacrifice_uids:
         handler._sacrifice_troop(

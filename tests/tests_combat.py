@@ -526,30 +526,6 @@ def test_champion_warm_rebuild_does_not_emit_card_updated(db):
         game_engine.ECardTypes.Champion
 
 
-def test_champion_collection_updates_are_suppressed(db):
-    """Only the initial CardUpdated(None) may seed a champion representation.
-
-    A later CardUpdated(Champions) makes the client treat a chain clone as a
-    real battlefield card, leaving a giant champion view after resolution.
-    """
-    from domain import game as gmod
-
-    pl_t = game_engine.UID.make(244, 5)
-    cid = game_engine.SessionCardId(game_engine.UID.make(244, 5))
-    game = gmod.Game(1, pl_t, game_engine.UID.make(3, 1000))
-    game.card_defs[cid] = gmod.CardDef(
-        "Zuba", game_engine.ECardTypes.Champion, 0, 20, 20, [], [])
-
-    assert game.push_card_updated(
-        cid, pl_t, game_engine.ECardCollections.Champions,
-        game_engine.ECardTypes.Champion) is False
-    assert game.events == []
-    game.push_card_updated(
-        cid, pl_t, game_engine.ECardCollections.None_,
-        game_engine.ECardTypes.Champion)
-    assert len(game.events) == 1
-
-
 def test_champion_board_cards_are_reannounced_once_client_is_live(db):
     """The champions' board views must be (re)placed once the client is in the
     battle UI.
@@ -627,7 +603,7 @@ def test_champion_board_cards_are_reannounced_once_client_is_live(db):
                if type(event).__name__ == "CardUpdatedSessionEventArgs"]
     assert [event.session_card_id for event in updates] == [player_champ, ai_champ]
     assert [event.defense for event in updates] == [18, 15]
-    assert all(event.collection == game_engine.ECardCollections.None_
+    assert all(event.collection == game_engine.ECardCollections.Champions
                and event.card_type == game_engine.ECardTypes.Champion
                for event in updates)
     # The champion abilities (charge/spell powers) survive the re-announce.
@@ -748,7 +724,8 @@ def test_basic_champion_power_is_not_activatable_on_chain(db):
                 manual=is_basic,
                 trigger_event_type=(
                     "" if is_basic else "Game.Shared.Mechanics.CardCastEvent"),
-                costs=mock.Mock(uses_per_game=0, uses_per_turn=0))
+                costs=mock.Mock(uses_per_game=0, uses_per_turn=0,
+                                activation=0))
 
         with mock.patch("hconnect_server._records_ability_graph",
                         side_effect=graph_for), \
@@ -774,6 +751,83 @@ def test_basic_champion_power_is_not_activatable_on_chain(db):
                 game_engine.ETurnPhases.FirstMainPhase) == []
     finally:
         dbmod._db = old_db
+
+
+def test_champion_ability_offer_requires_its_resource_cost(db):
+    """Issue #17: a shard cost (m_ActivationCost) gates the champion offer."""
+    import battle_engine as be
+    from gamedata import DEFAULT_RECORD_STORE, ability_graph
+    from hconnect_server import HCPHandler
+    spear = "948dee24-d74b-3bc9-7396-a8a79ccecd38"   # Ranged Expertise: Spear
+    graph = ability_graph(DEFAULT_RECORD_STORE, spear)
+    assert graph is not None and graph.manual, graph
+    assert graph.costs.activation == 2, graph.costs
+
+    class Ability:
+        guid = spear
+
+    handler = object.__new__(HCPHandler)
+    handler._champion_thresholds_met = lambda _guid, _state: True
+    handler._champion_ability_available = lambda *_args, **_kw: True
+    with mock.patch("db.db_talent_ability_costs", return_value=(0, 0, 0, 64)):
+        bstate = {"player_charges": 0, "player_spell_points": 0,
+                  "player_resources": 1, "turn_player": be.AI, "stack": []}
+        assert HCPHandler._filter_affordable_abilities(
+            handler, [Ability()], bstate,
+            game_engine.ETurnPhases.EndPhase) == []
+        bstate["player_resources"] = 2
+        assert [a.guid for a in HCPHandler._filter_affordable_abilities(
+            handler, [Ability()], bstate,
+            game_engine.ETurnPhases.EndPhase)] == [spear]
+
+
+def test_champion_card_updates_always_use_the_champions_collection(db):
+    """Issue #18: the client clones an ability-only chain card only for a
+    source outside collection None, so champions must sit in Champions."""
+    player = game_engine.UID.make(244, 1)
+    game = game_engine.Game(1, player, game_engine.UID.make(244, 2))
+    champ = game_engine.SessionCardId(game_engine.UID.make(255, 77))
+    for collection in (game_engine.ECardCollections.None_,
+                       game_engine.ECardCollections.Champions):
+        assert game.push_card_updated(
+            champ, player, collection, game_engine.ECardTypes.Champion) \
+            is not False
+    troop = game_engine.SessionCardId(game_engine.UID.make(255, 78))
+    game.push_card_updated(troop, player, game_engine.ECardCollections.Warzone,
+                           game_engine.ECardTypes.Troop)
+    updates = [(int(ev.session_card_id.uid.uid64), ev.collection)
+               for ev in game.events
+               if type(ev).__name__ == "CardUpdatedSessionEventArgs"]
+    assert updates == [
+        (int(champ.uid.uid64), game_engine.ECardCollections.Champions),
+        (int(champ.uid.uid64), game_engine.ECardCollections.Champions),
+        (int(troop.uid.uid64), game_engine.ECardCollections.Warzone)], updates
+
+
+def test_this_turn_card_stats_reset_at_turn_start(db):
+    """Issue #13: Xocoy's "dealt combat damage this turn" must end with the
+    turn (StartTurnState.UpdateStats)."""
+    from rules_port.filters import DamagedOpponentThisTurn
+    from rules_port.statistics import (add_card_stat,
+                                       start_turn_update_stats, tac_stat)
+    xocoy, champion = 0x1901, 0x101
+    state = {"champ_map": {"5": champion}}
+    add_card_stat(state, xocoy, 5, "CombatDamageDealtToOpponent", 4)
+    card = {"card_uid": xocoy}
+    check = DamagedOpponentThisTurn(only_combat_damage=True)
+
+    class Session:
+        battle_state = state
+    with mock.patch("rules_port.filters._runtime_state", lambda _s: state):
+        assert check.matches(card, session=Session())
+        start_turn_update_stats(state)
+        assert not check.matches(card, session=Session())
+    assert tac_stat(state, "cards", xocoy, "CardGameStats",
+                    "CombatDamageDealtToOpponent") == 4
+    assert tac_stat(state, "cards", champion, "PlayerHighestTurnStats",
+                    "CombatDamageDealtToOpponent") == 4
+    assert tac_stat(state, "cards", champion, "PlayerStatsThisTurn",
+                    "CombatDamageDealtToOpponent") == 0
 
 
 def test_game_started_chain_is_auto_passed(db):
@@ -2490,14 +2544,18 @@ def main():
         ("CardUpdated gem fallback", test_push_card_updated_gem_fallback),
         ("Champion warm omits CardUpdated",
          test_champion_warm_rebuild_does_not_emit_card_updated),
-        ("Champion collection updates suppressed",
-         test_champion_collection_updates_are_suppressed),
         ("Champion board cards re-announced once live",
          test_champion_board_cards_are_reannounced_once_client_is_live),
         ("Phase stop packet announces a phase once",
          test_phase_stop_packet_announces_each_phase_once),
         ("Basic champion power not activatable on chain",
          test_basic_champion_power_is_not_activatable_on_chain),
+        ("Champion ability offer requires its shard cost",
+         test_champion_ability_offer_requires_its_resource_cost),
+        ("Champion CardUpdated uses the Champions collection",
+         test_champion_card_updates_always_use_the_champions_collection),
+        ("This-turn card stats reset at turn start",
+         test_this_turn_card_stats_reset_at_turn_start),
         ("GameStarted chain auto-pass", test_game_started_chain_is_auto_passed),
         ("AI chain pass resumes AI",
          test_ai_turn_chain_pass_resolves_before_resuming_ai),

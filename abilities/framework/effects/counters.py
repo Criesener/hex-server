@@ -389,14 +389,12 @@ def push_champion_counter(game, session, handler, pl_t, ai_t, bstate,
     else:
         health = int(bstate.get("player_health" if owner_id else
                                "ai_health", 20))
-    # Champions live in the client cache with collection None, and the HUD
-    # effect icons (Stealth, Burning, Dazed, Vulnerable) are derived from that
-    # cached representation's counters — the client only stores counters from
-    # a CardUpdated.  ``ECardCollections.Champions`` would be suppressed here
-    # and would read as a CardMoved, so publish the counters while keeping the
-    # collection the client already has.
+    # The HUD effect icons (Stealth, Burning, Dazed, Vulnerable) are derived
+    # from the cached champion representation's counters, and the client only
+    # stores counters from a CardUpdated.  Champions stay in the Champions
+    # collection for the whole game.
     game.push_card_updated(
-        scid, player_uid, game_engine.ECardCollections.None_,
+        scid, player_uid, game_engine.ECardCollections.Champions,
         game_engine.ECardTypes.Champion, template_id=template_id,
         defense=health, counters={str(counter_guid).lower(): int(new_value)},
         secret_counter_guids=({str(counter_guid).lower()}

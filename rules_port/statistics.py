@@ -225,6 +225,44 @@ def increment_card_escalation(db, session_id, state, card_uid):
         return value
 
 
+def start_turn_update_stats(state):
+    """Port ``StartTurnState.UpdateStats`` for every card's TAC statistics.
+
+    At each turn start C# folds a card's CardStatsThisTurn into its
+    CardGameStats and empties CardStatsThisTurn and ThisTurnsData; a
+    champion's PlayerStatsThisTurn is folded into PlayerHighestTurnStats and
+    deleted.  Without it a "this turn" stat such as Xocoy's
+    CombatDamageDealtToOpponent stayed set for the rest of the game.
+    """
+    if not isinstance(state, dict):
+        return
+    with _STATS_LOCK:
+        root = state.get("tac_statistics")
+        if not isinstance(root, dict):
+            return
+        for collection in ("cards", "players"):
+            entries = root.get(collection)
+            if not isinstance(entries, dict):
+                continue
+            for entry in entries.values():
+                if not isinstance(entry, dict):
+                    continue
+                for this_turn, kept in (
+                        ("CardStatsThisTurn", "CardGameStats"),
+                        ("PlayerStatsThisTurn", "PlayerHighestTurnStats")):
+                    values = entry.get(this_turn)
+                    if not isinstance(values, dict):
+                        continue
+                    totals = entry.setdefault(kept, {})
+                    for name, value in values.items():
+                        if isinstance(value, (int, float)):
+                            totals[name] = max(_number(totals.get(name)),
+                                               _number(value))
+                    entry[this_turn] = {}
+                if isinstance(entry.get("ThisTurnsData"), dict):
+                    entry["ThisTurnsData"] = {}
+
+
 def add_card_stat(state, card_uid, owner_id, name, amount):
     """Port ``Card.AddToStat`` including its controller's player statistics."""
     add_tac_stat(state, "cards", card_uid, "CardStatsThisTurn", name, amount)

@@ -54,12 +54,9 @@ def _project(context, uid, owner, guid, old, new, champion=False):
                     else getattr(context.handler, "_ai_champ_guid", None))
         # The champion HUD reads its effect icons (Stealth, Burning, Dazed,
         # Vulnerable) from the cached CardRepresentation counters, and the
-        # client only stores those from a CardUpdated.  Champions sit in the
-        # cache as collection None (the battle-start seed), and a Champions
-        # collection here would be both suppressed by ``push_card_updated``
-        # and read as a CardMoved, so keep the collection the client already
-        # has while carrying the new counters.
-        collection = game_engine.ECardCollections.None_
+        # client only stores those from a CardUpdated.  Champions stay in
+        # the Champions collection for the whole game.
+        collection = game_engine.ECardCollections.Champions
         card_type = game_engine.ECardTypes.Champion
         health = int(context.bstate.get(
             ((context.bstate.get("pvp_health_map") or {}).get(owner) or
