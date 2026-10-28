@@ -6,6 +6,7 @@ import io
 import struct
 import json
 
+from domain.enums import client_gem_value
 from profile_db import db_card_instance_for_encoded_deck
 from services.equipment import ZERO_GUID, equipment_slots as _equipment_slots
 
@@ -35,7 +36,9 @@ def write_guid(buf, guid_str):
 def encode_profile_deck_template(buf, name, champ_guid, sleeve_guid, cards, extended_data=None, card_gems=None,
                                  equipment_slots=None):
     """Encode a ProfileDeckTemplate.ToBytes() payload.
-    card_gems: dict of {instance_id: gem_type_int} for per-instance gem data.
+    cards: (template_guid, count, is_ext, is_foil, is_reserve[, instance_id]).
+    card_gems: dict of {instance_id: gem_type_int} for per-instance gem data;
+    a card entry only carries the gems of its own instance.
     equipment_slots: six GUIDs indexed by EEquipmentType (Head=0..Trinket=5)."""
     write_csharp_string(buf, name)
     write_guid(buf, champ_guid)
@@ -48,13 +51,16 @@ def encode_profile_deck_template(buf, name, champ_guid, sleeve_guid, cards, exte
         write_varint(buf, slot)
         write_guid(buf, guid)
     write_varint(buf, len(cards))
-    for (tguid, count, is_ext, is_foil, is_reserve) in cards:
+    for card in cards:
+        tguid, count, is_ext, is_foil, is_reserve = card[:5]
+        instance_id = card[5] if len(card) > 5 else None
         write_guid(buf, tguid)
         write_varint(buf, count)
         buf.write(b'\x00' if not is_reserve else b'\x01')
         buf.write(b'\x00' if not is_ext else b'\x01')
         buf.write(b'\x00' if not is_foil else b'\x01')
-        gem_types = [int(v) for v in (card_gems or {}).values() if v]
+        gem = (card_gems or {}).get(instance_id) if instance_id is not None else 0
+        gem_types = [client_gem_value(gem)] if gem else []
         write_varint(buf, len(gem_types))
         for g in gem_types:
             write_varint(buf, g)
@@ -117,7 +123,7 @@ def encode_encoded_decks(db_decks, user_id, conn=None):
             if row:
                 tguid = row[1]
                 is_ext = row[2]
-                cards.append((tguid, 1, bool(is_ext), False, False))
+                cards.append((tguid, 1, bool(is_ext), False, False, cid))
                 key = (tguid, bool(is_ext))
                 if key not in all_cards_by_group:
                     all_cards_by_group[key] = []

@@ -140,6 +140,28 @@ def test_encoded_deck_template_writes_equipment():
     assert len(equipped) == len(empty) + 17
 
 
+def test_encoded_deck_template_gems_stay_on_their_card():
+    # Issue #15: one socketed card's gems were written on every card entry.
+    xocoy, plain = "11111111-1111-1111-1111-111111111111", VOLTAIC_HANDGUARDS
+    cards = [(plain, 1, False, False, False, 10),
+             (xocoy, 1, False, False, False, 11),
+             (plain, 1, False, False, False, 12)]
+    gem = 4611686018427397130
+
+    def encode(card_gems):
+        buf = io.BytesIO()
+        encoded_decks.encode_profile_deck_template(
+            buf, "D", ZERO_GUID, ZERO_GUID, cards, card_gems=card_gems)
+        return buf.getvalue()
+    gem_buf = io.BytesIO()
+    encoded_decks.write_varint(gem_buf, gem)
+    with_gems = encode({11: gem})
+    assert len(with_gems) == len(encode({})) + len(gem_buf.getvalue())
+    assert with_gems.count(gem_buf.getvalue()) == 1
+    # Values stored without the new-gem-format flag are sent with it.
+    assert encode({11: gem & ~(1 << 62)}) == with_gems
+
+
 class _Handler(hconnect_server.HCPHandler):
     def __init__(self, user_id):
         self.user_profile = {"id": user_id}
@@ -192,6 +214,7 @@ if __name__ == "__main__":
     run("sanitize keeps owned items, one per type", test_sanitize_keeps_owned_items_one_per_type)
     run("equipment slots follow EEquipmentType", test_equipment_slots_follow_equipment_type_order)
     run("encoded deck template writes equipment", test_encoded_deck_template_writes_equipment)
+    run("encoded deck gems stay on their card", test_encoded_deck_template_gems_stay_on_their_card)
     run("UpdateDeck/GetDeckInfo round-trip equipment",
         test_update_deck_saves_and_get_deck_info_returns_equipment)
     if FAILURES:
