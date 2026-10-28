@@ -4,7 +4,7 @@ import random
 
 from db import log
 from pvp_db import db_card_catalog, db_pvp_set_guids
-from static import CRAYBURN_PACK_CARD_SEEDS
+from static import CRAYBURN_PACK_CARD_SEEDS, PACK_SLOT_LAYOUTS
 
 
 _CARD_CACHE = {}
@@ -34,20 +34,29 @@ def get_pvp_sets():
     return _PVP_SET_GUIDS
 
 
-def generate_booster(card_data, set_id):
+def generate_booster(card_data, set_id, pack_type="BoosterPack"):
+    """Open one pack of ``pack_type`` using its PACK_SLOT_LAYOUTS slots."""
+    layout = PACK_SLOT_LAYOUTS.get(pack_type) or PACK_SLOT_LAYOUTS["BoosterPack"]
     pool = [card for card in card_data.get(set_id, ())
             if card[2] in ("Common", "Uncommon", "Rare", "Legendary")
             and not card[6] and not card[7]]
-    if len(pool) < 17:
+    if len(pool) < sum(slot["count"] for slot in layout):
         chosen = pool
     else:
-        commons = [card for card in pool if card[2] == "Common"] or list(pool)
-        uncommons = [card for card in pool if card[2] == "Uncommon"] or list(pool)
-        rares = [card for card in pool if card[2] == "Rare"] or list(pool)
-        legendaries = [card for card in pool if card[2] == "Legendary"]
-        chosen = random.sample(commons, min(12, len(commons)))
-        chosen += random.sample(uncommons, min(4, len(uncommons)))
-        chosen.append(random.choice(legendaries if legendaries and random.random() < 0.11 else rares))
+        def bucket(rarity):
+            return [card for card in pool if card[2] == rarity]
+
+        chosen = []
+        for slot in layout:
+            cards = bucket(slot["rarity"]) or list(pool)
+            upgrade = bucket(slot["upgrade"]) if slot.get("upgrade") else []
+            if upgrade:
+                for _ in range(slot["count"]):
+                    chosen.append(random.choice(
+                        upgrade if random.random() < slot["upgrade_chance"]
+                        else cards))
+            else:
+                chosen += random.sample(cards, min(slot["count"], len(cards)))
         random.shuffle(chosen)
     return [(g, n, cost, atk, defense)
             for g, n, _rarity, cost, atk, defense, _pve, _nopvp, _type in chosen]

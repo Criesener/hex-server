@@ -11379,6 +11379,11 @@ class HCPHandler(ProfileStreamMixin):
                 _atk, _def, _attrs, _flags, rage = effective_stats(
                     _db, game.session_id.uid64, bstate, scid.uid.uid64)
                 game.card_defs[scid].rage = int(rage or 0)
+                # CardUpdated.Lethal drives the Lethal text line and board
+                # icon; gained Lethal (a Boon, "gets Lethal") lives only in
+                # IntAttrs, which the client hides for Lethal (issue #24).
+                game.card_defs[scid].lethal = (
+                    bool(lethal) or "lethal" in (_flags or ()))
             except Exception:
                 game.card_defs[scid].rage = 0
         return tpl_guid, ct, name, cost, atk, def_, gem_type
@@ -19824,8 +19829,10 @@ class HCPHandler(ProfileStreamMixin):
                                 all_cards.append((c[0], c[1], c[3], c[4], c[5]))
                     log_req(f"    Full set: {len(pool)} unique cards x4 = {len(all_cards)} total")
                 else:
+                    pack_type = "PrimalPack" if is_primal else "BoosterPack"
                     for _ in range(open_amount):
-                        all_cards.extend(_generate_booster(card_templates, set_guid))
+                        all_cards.extend(_generate_booster(
+                            card_templates, set_guid, pack_type))
     
             # Track instance IDs for response encoding (fallback: 5000+)
             card_instance_ids = [5000 + i for i in range(len(all_cards))]

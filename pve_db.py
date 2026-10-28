@@ -965,6 +965,21 @@ def db_quest_template(script_name=None, campaign_group=None, conn=None):
     return _connection(conn).execute(sql, params).fetchone()
 
 
+def db_quest_objective_templates(conn=None):
+    """Return ``(script_name, objectives_json)`` for every enabled quest."""
+    return _connection(conn).execute(
+        "SELECT script_name, objectives_json FROM quest_templates "
+        "WHERE enabled=1").fetchall()
+
+
+def db_scene_guids_matching(text, conn=None):
+    """Return scene GUIDs whose authored name or title contains ``text``."""
+    pattern = f"%{str(text or '').strip()}%"
+    return [row[0] for row in _connection(conn).execute(
+        "SELECT guid FROM encounter_scenes WHERE name LIKE ? OR title LIKE ?",
+        (pattern, pattern)).fetchall()]
+
+
 def db_quest_campaign_id(champion_id, script_name, conn=None):
     """Return an existing quest campaign ID for a champion/script."""
     row = _connection(conn).execute(

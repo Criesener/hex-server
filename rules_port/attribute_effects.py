@@ -297,5 +297,8 @@ def apply_attribute_grant(context, target, param):
             template_id=row[0], attack=attack, defense=defense, cost=cost,
             gems=gems, attributes=projected_attributes,
             int_attrs=projected_int_attrs,
+            lethal=bool(getattr(card_def, "lethal", False) or
+                        int_attr == "Lethal" or
+                        int(projected_int_attrs.get("Lethal", 0) or 0) > 0),
             nulling=str(row[2]).lower() == "deck")
     return int((boon or 0) if int_attr else granted_bits)

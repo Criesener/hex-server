@@ -1969,6 +1969,42 @@ def test_triggered_attribute_grant_persists_the_speed_bit(db):
     assert pushed and all(int(value or 0) & speed for value in pushed), pushed
 
 
+TPL_TOOLKIT_ASSISTANT = "c23c8e53-2efa-4269-a838-7aa6ce021d55"
+AG_TOOLKIT_BOON = "31f5ffe7-ec25-a0d2-65dc-b90fe6229686"
+
+
+def test_boon_lethal_is_announced_as_cardupdated_lethal(db):
+    """Issue #24: a Lethal Boon lives in IntAttrs, which the client hides for
+    Lethal; only CardUpdated.Lethal draws its text line and board icon."""
+    from types import SimpleNamespace
+    from unittest import mock
+    from rules_port import attribute_effects
+    from rules_port.resolution import resolve_port_trigger
+
+    troop = 9202
+    _copy_card(db, TPL_TOOLKIT_ASSISTANT)
+    add_card(db, troop, 5, TPL_TOOLKIT_ASSISTANT)
+    pl_t, ai_t = _pl_ai()
+    game = game_engine.Game(1, pl_t, ai_t)
+    handler = HandlerStub(db)
+    item = {"kind": "trigger", "ability_guid": AG_TOOLKIT_BOON,
+            "source_uid": troop, "target_uid": troop,
+            "trigger_target_uid": troop, "source_owner_uid": 5,
+            "instance_id": 1}
+    bstate = {"pvp": False, "turn_pid": 5, "stack": [],
+              "_rules_rng": SimpleNamespace(next=lambda span: 0)}
+    lethal_boon = int(game_engine.ECardAttributes.DualStrike)
+    with mock.patch.object(attribute_effects, "_choose_boon",
+                           return_value=lethal_boon):
+        resolve_port_trigger(handler, game, SessionStub(), db, pl_t, ai_t,
+                             bstate, item)
+    pushed = [event for event in game.events
+              if isinstance(event, game_engine.CardUpdatedSessionEventArgs)
+              and int(event.session_card_id.uid.uid64) == troop]
+    assert pushed, game.events
+    assert pushed[-1].lethal is True, [e.lethal for e in pushed]
+
+
 TPL_KRAKEN_GUARD_MARINER = "e3a0ca9c-c21c-45d3-a36d-c4d5c03e445d"
 AG_KRAKEN_GUARD_INSPIRE = "759e8464-7980-279a-1935-626e00c13f99"
 TPL_NECROPHAGE_SENSEI = "01286365-bb10-4c8a-a539-2c61a8f76d95"
@@ -3030,6 +3066,7 @@ def _main():
              test_trigger_chain_item_does_not_rerun_its_bom_after_a_picker,
              test_triggered_chance_branch_stores_the_entering_troop,
              test_triggered_attribute_grant_persists_the_speed_bit,
+             test_boon_lethal_is_announced_as_cardupdated_lethal,
              test_creation_replacement_and_bonus,
              test_native_enters_play_and_inspire_fire,
              test_troop_entry_discovers_the_opposing_champions_trigger,

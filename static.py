@@ -1423,6 +1423,23 @@ CONVERSATION_REWARD_SEEDS = [
 # a card-set GUID.  The lists contain standard card printings plus the
 # authored PvE champion card for each race; pack opening grants one copy of
 # every entry.
+# Card slots per InventoryCardPack.m_CardPackType.  The client data has no
+# slot table; these follow its localized pack contents (BoosterPack_Contents_*:
+# "12 Commons / 4 Uncommons / 1 Rare or Legendary", PrimalPack_Contents_*:
+# "13 Rares / 2 Legendaries").  Treasure chests are rolled separately.
+PACK_SLOT_LAYOUTS = {
+    "BoosterPack": (
+        {"rarity": "Common", "count": 12},
+        {"rarity": "Uncommon", "count": 4},
+        {"rarity": "Rare", "count": 1,
+         "upgrade": "Legendary", "upgrade_chance": 0.11},
+    ),
+    "PrimalPack": (
+        {"rarity": "Rare", "count": 13},
+        {"rarity": "Legendary", "count": 2},
+    ),
+}
+
 CRAYBURN_PACK_CARD_SEEDS = {
     # Crayburn Castle (Human) Pack
     "5d2fb7e1-702e-424f-afe0-0b1bbb914e7f": [

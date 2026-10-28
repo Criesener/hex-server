@@ -1488,6 +1488,118 @@ def _az1_node_conversation_rows(db, node, campaign_template="AZ1"):
     return result
 
 
+def _conversation_step(label):
+    """Authored step number of a node conversation ("Wallace - Step 2 ...")."""
+    match = re.search(r"\bstep\s*(\d+)", str(label or ""), re.I)
+    return int(match.group(1)) if match else None
+
+
+def _objective_conversations(objective):
+    if not isinstance(objective, dict):
+        return set()
+    guids = {str(g) for g in (objective.get("conversation_ids") or []) if g}
+    if objective.get("conversation"):
+        guids.add(str(objective["conversation"]))
+    return guids
+
+
+def _quest_conversation_gates(db, champ_id):
+    """Return (objective conversations, those of a current objective).
+
+    A quest objective's conversation (Wallace's "Return to Wallace" turn-in)
+    may only play while that objective is the champion's current one; node
+    selection must not reach it through visit order (issue #25).
+    """
+    gated = set()
+    for _script, raw in pve_db.db_quest_objective_templates(db):
+        try:
+            objectives = json.loads(raw or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        # The first objective's conversation can be the one that grants the
+        # quest, so only later objectives (turn-ins) are gated.
+        for objective in (objectives[1:] if isinstance(objectives, list)
+                          else []):
+            gated |= _objective_conversations(objective)
+    current = set()
+    for _quest_id, raw in (pve_db.db_campaign_state_rows(
+            champ_id, "QUEST", db) if champ_id else []):
+        try:
+            quest = json.loads(raw or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if quest.get("Finished"):
+            continue
+        flags = quest.get("Flags") or {}
+        objectives = flags.get("_quest_objectives") or []
+        try:
+            index = int(flags.get("_quest_objective_idx", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= index < len(objectives):
+            current |= _objective_conversations(objectives[index])
+    return gated, current
+
+
+def _encounter_beaten_condition(db, state, label):
+    """Evaluate an authored "player has (NOT) beaten <X>" label.
+
+    Returns True when the label's condition holds, False when it does not
+    and None for labels without such a condition.  ``<X>`` is matched
+    against authored encounter scene names, so no encounter is named here.
+    """
+    match = re.search(r"\bhas\s+(not\s+)?beaten\s+(.+?)\s*$",
+                      str(label or ""), re.I)
+    if not match:
+        return None
+    scenes = set(pve_db.db_scene_guids_matching(match.group(2), db))
+    successes = (state or {}).get("_encounter_successes") or {}
+    beaten = any(int(successes.get(scene, 0) or 0) > 0 for scene in scenes)
+    if not beaten:
+        beaten = any(
+            (loc.get("Data") or {}).get("completed") and
+            str((loc.get("Data") or {}).get("encounter") or "") in scenes
+            for loc in (state or {}).get("VisLocs") or [])
+    return beaten != bool(match.group(1))
+
+
+def _filter_conditional_conversations(db, champ_id, state, rows):
+    """Drop node conversations whose authored condition does not hold."""
+    gated, current = _quest_conversation_gates(db, champ_id)
+    kept = []
+    for row in rows:
+        guid, trigger, _priority, name = row
+        label = str(trigger.get("label") or name or "")
+        if str(guid) in gated and str(guid) not in current:
+            continue
+        if _encounter_beaten_condition(db, state, label) is False:
+            continue
+        kept.append(row)
+    return kept
+
+
+def _next_step_conversation(rows, last_step):
+    """Pick a repeat-visit conversation by authored step order.
+
+    The next step after the last one played wins; when that step is not
+    available yet (a quest-gated turn-in) the latest available step up to
+    ``last_step`` repeats instead of skipping ahead.
+    """
+    stepped = sorted(
+        (step, guid) for guid, trigger, _priority, name in rows
+        for step in [_conversation_step(trigger.get("label") or name)]
+        if step is not None and not trigger.get("outcome"))
+    if not stepped:
+        return None
+    later = [entry for entry in stepped if entry[0] > last_step]
+    if later and later[0][0] == last_step + 1:
+        return later[0][1]
+    earlier = [entry for entry in stepped if entry[0] <= last_step]
+    if earlier:
+        return earlier[-1][1]
+    return later[0][1] if later else None
+
+
 def _conversation_matches_faction(conversation_name, faction):
     """Match explicit authored Ardent/Underworld conversation labels."""
     if not faction:
@@ -1575,6 +1687,8 @@ def _az1_node_conversation(db, node, state=None, campaign_template="AZ1",
         ]
         if faction_rows:
             rows = faction_rows
+    rows = (_filter_conditional_conversations(db, champ_id, state, rows)
+            or rows)
     data = ((state or {}).get("PublicState", {}) or {}).get("Data", {}) or {}
     visits = data.get("conversation_visits") or {}
     try:
@@ -1582,10 +1696,12 @@ def _az1_node_conversation(db, node, state=None, campaign_template="AZ1",
     except (TypeError, ValueError):
         visit_count = 0
     has_fortune = bool(data.get("gaal_fortune"))
+    played_steps = data.get("conversation_steps") or {}
     # A node's authored baseline dialogue wins on its first visit.  This
     # prevents a fortune earned at another location from replacing Winston's
     # initial bridge-closed conversation with the optional Milosh variant.
-    if visit_count <= 1:
+    # A recorded step means that first conversation has been played.
+    if visit_count <= 1 and str(node) not in played_steps:
         for guid, trigger, _priority, _name in rows:
             if (str(trigger.get("visit") or "").lower() == "first" and
                     str(trigger.get("state") or "").strip() == ""):
@@ -1621,6 +1737,15 @@ def _az1_node_conversation(db, node, state=None, campaign_template="AZ1",
         for guid, trigger, _priority, _name in rows:
             if str(trigger.get("visit") or "").lower() == "repeat":
                 return guid
+        # Older states recorded only the visit count: the first visit
+        # played step 1.
+        try:
+            last_step = int(played_steps.get(str(node), 1) or 1)
+        except (TypeError, ValueError):
+            last_step = 1
+        stepped = _next_step_conversation(rows, last_step)
+        if stepped:
+            return stepped
     fallback = None
     for guid, trigger, _priority, _name in rows:
         if fallback is None:
@@ -2576,14 +2701,11 @@ def _quest_hook_az1_tamed_start(db, champ_id, state):
     zodiac_rows = pve_db.db_campaign_state_rows(
         champ_id, "QUEST", db, template_name="az01_q_cross_the_river_part2",
         require_state=True, newest_first=True)
-    zodiac_row = zodiac_rows[0][1:2] if zodiac_rows else None
-    try:
-        zodiac_active = bool(
-            zodiac_row and not json.loads(zodiac_row[0] or "{}").get("Finished")
-        )
-    except (TypeError, ValueError, json.JSONDecodeError):
-        zodiac_active = False
-    if not zodiac_active:
+    # A finished quest still counts as started: gating on "not Finished"
+    # re-closed the West bridge under the player once Warren was reached
+    # (issue #27).
+    zodiac_started = bool(zodiac_rows)
+    if not zodiac_started:
         _az1_set_node_gate(state, "Node018", True)
         _az1_gate_zodiac_west_bridge(db, state, True)
         pdata = state.setdefault("PublicState", {}).setdefault("Data", {})
@@ -2591,6 +2713,10 @@ def _quest_hook_az1_tamed_start(db, champ_id, state):
                   if value and str(value) != "Node018"]
         hidden.append("Node018")
         pdata["quest_hidden_nodes"] = hidden
+    elif json.loads(zodiac_rows[0][1] or "{}").get("Finished"):
+        # Finished quests no longer replay their hook; reapply its final
+        # state so a save gated by the old check opens again.
+        _quest_hook_az1_cross_zodiac_start(db, champ_id, state)
     # The west half of the Zila bridge is opened only after the Savage Lord
     # route is resolved; it must not appear on a fresh AZ1 map.
     _az1_set_node_gate(state, "Node015", True)
@@ -2616,7 +2742,7 @@ def _quest_hook_az1_tamed_start(db, champ_id, state):
     for loc in state.get("VisLocs", []):
         data = loc.get("Data") or {}
         if (data.get("node") == "Node015" and west_bridge_gated) or (
-                data.get("node") == "Node018" and not zodiac_active):
+                data.get("node") == "Node018" and not zodiac_started):
             data.update({"visible": False, "enabled": False})
     return json.dumps(state, sort_keys=True) != before
 
@@ -5353,6 +5479,20 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
                         visits[node_key] = int(visits.get(node_key, 0) or 0) + 1
                     except (TypeError, ValueError):
                         visits[node_key] = 1
+                    played = str(current_data.get("conversationId") or "")
+                    step = next((
+                        _conversation_step(trigger.get("label") or name)
+                        for guid, trigger, _priority, name in
+                        _az1_node_conversation_rows(
+                            db, node_key, current_template)
+                        if str(guid) == played), None)
+                    if step is not None:
+                        steps = pdata.setdefault("conversation_steps", {})
+                        try:
+                            steps[node_key] = max(
+                                int(steps.get(node_key, 0) or 0), step)
+                        except (TypeError, ValueError):
+                            steps[node_key] = step
                 # Completing the Savage Lord result conversation unlocks the
                 # west half of the Zila bridge. Until this point Node015 stays
                 # hidden/blocked even though the authored map graph contains

@@ -2004,6 +2004,117 @@ def test_unlocked_west_bridge_visit_survives_the_tamed_gate():
         db.close()
         os.unlink(path)
 
+def test_finished_cross_zodiac_keeps_the_west_bridge_open():
+    """Issue #27: once Cross the Zodiac River finished, the Tamed hook took
+    it for "not started" and hid Node038 under the player again."""
+    db, path = cloned_db()
+    try:
+        campaign._ensure_quest_campaign(
+            db, 6, "AREA", "az01_q_cross_the_river_part2")
+        quest_id, raw = campaign.pve_db.db_campaign_state_rows(
+            6, "QUEST", db, template_name="az01_q_cross_the_river_part2")[0]
+        quest = json.loads(raw)
+        quest["Finished"] = "2026-10-28T13:31:50Z"
+        quest.setdefault("Flags", {})["_quest_objective_idx"] = 3
+        db.execute("UPDATE campaigns SET state_json=? WHERE id=?",
+                   (json.dumps(quest), quest_id))
+        db.commit()
+        _area_id, state = area_state(db)
+        pdata = state.setdefault("PublicState", {}).setdefault("Data", {})
+        pdata.update({"blocked_nodes": ["Node038", "Node018"],
+                      "quest_hidden_nodes": ["Node038", "Node018"]})
+        for loc in state["VisLocs"]:
+            if loc["Data"].get("node") in ("Node038", "Node018"):
+                loc["Data"].update({"visible": False, "enabled": False})
+        campaign._quest_hook_az1_tamed_start(db, 6, state)
+        for node in ("Node038", "Node018"):
+            assert node not in pdata["blocked_nodes"], pdata["blocked_nodes"]
+            assert node not in pdata["quest_hidden_nodes"], pdata
+        dryad = next(x["Data"] for x in state["VisLocs"]
+                     if x["Data"].get("node") == "Node018")
+        assert dryad.get("visible") is True, dryad
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+DRYAD_SCENE = "879317e1-8b04-486e-a10a-f2d2f1a080bc"
+WALLACE = {"step1": "5b36ea00-d06a-4b97-9836-89aaa52fb7ee",
+           "step2": "9f414188-5337-464d-9521-a89f37fcee9c",
+           "step3": "1e9d1bd0-0967-4fe8-be79-d0cb068f973e",
+           "step4": "5061b7f4-9c7c-4e2f-a216-9924928c5db7"}
+WARREN_BEATEN = "08b9b8ab-2100-4f8d-87b0-18369eb4ecb4"
+WARREN_NOT_BEATEN = "48187c2d"
+
+
+def _set_cross_zodiac(db, champ, index, finished=False):
+    campaign._ensure_quest_campaign(
+        db, champ, "AREA", "az01_q_cross_the_river_part2")
+    quest_id, raw = campaign.pve_db.db_campaign_state_rows(
+        champ, "QUEST", db, template_name="az01_q_cross_the_river_part2")[0]
+    quest = json.loads(raw)
+    flags = quest.setdefault("Flags", {})
+    if not flags.get("_quest_objectives"):
+        flags["_quest_objectives"] = json.loads(db.execute(
+            "SELECT objectives_json FROM quest_templates "
+            "WHERE script_name='az01_q_cross_the_river_part2'").fetchone()[0])
+    flags["_quest_objective_idx"] = index
+    quest["Finished"] = "2026-10-28T13:31:50Z" if finished else None
+    db.execute("UPDATE campaigns SET state_json=? WHERE id=?",
+               (json.dumps(quest), quest_id))
+    db.commit()
+
+
+def test_wallace_follows_the_story_order_on_revisits():
+    """Issue #25: revisits picked Wallace's turn-in by GUID order before the
+    Dryad was beaten."""
+    db, path = cloned_db()
+    try:
+        def pick(visits, steps, beaten):
+            state = {"PublicState": {"Data": {
+                "conversation_visits": {"Node030": visits},
+                "conversation_steps": steps}},
+                "_encounter_successes": {DRYAD_SCENE: 1} if beaten else {},
+                "VisLocs": []}
+            return campaign._az1_node_conversation(
+                db, "Node030", state, champ_id=6)
+
+        _set_cross_zodiac(db, 6, 0)
+        assert pick(0, {}, False) == WALLACE["step1"]
+        assert pick(1, {"Node030": 1}, False) == WALLACE["step2"]
+        assert pick(2, {"Node030": 2}, False) == WALLACE["step2"]
+        _set_cross_zodiac(db, 6, 1)
+        assert pick(3, {"Node030": 2}, True) == WALLACE["step3"]
+        _set_cross_zodiac(db, 6, 2)
+        assert pick(4, {"Node030": 3}, True) == WALLACE["step4"]
+        _set_cross_zodiac(db, 6, 3, finished=True)
+        assert pick(5, {"Node030": 4}, True) == WALLACE["step4"]
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def test_warren_variant_follows_the_dryad_outcome():
+    """Issue #25: "Step 1a player has beaten Dryad" sorted first and played
+    regardless of the Dryad fight."""
+    db, path = cloned_db()
+    try:
+        def pick(beaten):
+            state = {"PublicState": {"Data": {"conversation_visits": {}}},
+                     "_encounter_successes": {DRYAD_SCENE: 1} if beaten else {},
+                     "VisLocs": []}
+            return campaign._az1_node_conversation(
+                db, "Node038", state, champ_id=6)
+
+        _set_cross_zodiac(db, 6, 0)
+        assert pick(False).startswith(WARREN_NOT_BEATEN), pick(False)
+        _set_cross_zodiac(db, 6, 2)
+        assert pick(True) == WARREN_BEATEN
+    finally:
+        db.close()
+        os.unlink(path)
+
+
 if __name__ == "__main__":
     tests = [
         test_cross_zila_objective_is_linked_to_savage_lord,
@@ -2049,6 +2160,9 @@ if __name__ == "__main__":
         test_bubblebee_objective_points_at_its_capture_scene,
         test_won_capture_node_reopens_while_its_objective_is_pending,
         test_indigo_river_prelude_is_a_conversation_not_a_battle,
+        test_finished_cross_zodiac_keeps_the_west_bridge_open,
+        test_wallace_follows_the_story_order_on_revisits,
+        test_warren_variant_follows_the_dryad_outcome,
     ]
     for test in tests:
         test()

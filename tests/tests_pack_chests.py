@@ -92,9 +92,26 @@ def test_chest_rarities_follow_the_table():
     assert hconnect_server._roll_pack_chest_rarities(3, is_primal=True) == ["Legendary"] * 3
 
 
+def test_primal_packs_hold_13_rares_and_2_legendaries():
+    """Issue #28: Primal Packs opened with the 12/4/1 booster layout."""
+    from collections import Counter
+    from services.card_pools import generate_booster, load_card_templates
+    templates = load_card_templates()
+    rarity = {card[0]: card[2] for cards in templates.values() for card in cards}
+    primal = generate_booster(templates, SET1, "PrimalPack")
+    counts = Counter(rarity[guid] for guid, *_ in primal)
+    assert counts == {"Rare": 13, "Legendary": 2}, counts
+    assert len({guid for guid, *_ in primal}) == 15, primal
+    booster = Counter(rarity[guid] for guid, *_ in generate_booster(templates, SET1))
+    assert booster["Common"] == 12 and booster["Uncommon"] == 4, booster
+    assert booster["Rare"] + booster["Legendary"] == 1, booster
+
+
 if __name__ == "__main__":
     run("each booster pack awards a chest", test_each_booster_pack_awards_a_chest)
     run("Primal Packs award Legendary chests", test_primal_packs_award_legendary_chests)
     run("chest rarities follow the table", test_chest_rarities_follow_the_table)
+    run("Primal Packs hold 13 Rares and 2 Legendaries",
+        test_primal_packs_hold_13_rares_and_2_legendaries)
     if FAILURES:
         sys.exit(1)
