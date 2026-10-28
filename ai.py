@@ -34,6 +34,8 @@ from pvp_db import (db_set_card_state_or,
                     db_ability_raw_json, db_ability_trigger_metadata,
                     db_ability_activation_metadata,
                     db_ability_effect_type_params,
+                    db_ability_flat_effect_rows,
+                    db_ability_flat_effect_type_params,
                     db_ability_target_template_ids,
                     db_champion_ability_target_template_ids,
                     db_target_template_filter,
@@ -2641,6 +2643,87 @@ def _ai_effect_amount(session, battle_state, ability_guid, source_uid,
         return amount
 
 
+def _ai_filter_has_zone(node, zone):
+    """Whether a serialized card filter contains ``InZone(zone)``."""
+    if isinstance(node, dict):
+        if (str(node.get("_t", "")).rsplit(".", 1)[-1] == "InZone" and
+                zone in str(node.get("m_Collection") or "").split("|")):
+            return True
+        return any(_ai_filter_has_zone(value, zone)
+                   for value in node.values())
+    if isinstance(node, list):
+        return any(_ai_filter_has_zone(value, zone) for value in node)
+    return False
+
+
+def _ai_reveals_hand_card_to_transform(ability_guid):
+    """Whether the expanded BOM reveals a hand card and transforms it.
+
+    True when it has both RevealCards and TransformCardAtRandom, and the
+    reveal's authored target template (looked up on the ability owning that
+    effect row) filters on the Hand zone or the reveal has no target at all.
+    """
+    rows = db_ability_flat_effect_rows(ability_guid, conn=_db)
+    types = {row[1] for row in rows}
+    if not {"RevealCardsAbilityEffectTemplate",
+            "TransformCardAtRandomAbilityEffectTemplate"} <= types:
+        return False
+    for owner, effect_type, _param, target_index in rows:
+        if effect_type != "RevealCardsAbilityEffectTemplate":
+            continue
+        payload = db_ability_target_template_ids(owner, conn=_db)
+        try:
+            template_ids = [str(value).lower() for value in
+                            (json.loads(payload) if payload else []) if value]
+        except (TypeError, ValueError, json.JSONDecodeError):
+            template_ids = []
+        index = int(target_index if target_index is not None else -1)
+        if not 0 <= index < len(template_ids):
+            return True
+        try:
+            card_filter = json.loads(
+                db_target_template_filter(template_ids[index], conn=_db)
+                or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            card_filter = {}
+        if _ai_filter_has_zone(card_filter, "Hand"):
+            return True
+    return False
+
+
+def _ai_opposing_champion_uids(handler, own_champion_uid):
+    """Champion UIDs other than the AI's own champion."""
+    try:
+        champions = handler._champion_targets()
+    except Exception:
+        champions = []
+    return {int(item[0]) for item in champions
+            if own_champion_uid is None or int(item[0]) != own_champion_uid}
+
+
+def _ai_hand_transform_worth(session, ability_guid, candidate_uids,
+                             has_target_templates, opposing_champion_uids,
+                             opponent_owner_id):
+    """Decide a reveal-a-random-hand-card-and-transform-it ability.
+
+    ``None`` when the ability is not of that shape.  Otherwise it is worth
+    using only when it reaches the opponent's hand (an opposing champion or
+    an opposing card among the legal targets, or no authored target at all)
+    and that hand holds at least one card.
+    """
+    if not _ai_reveals_hand_card_to_transform(ability_guid):
+        return None
+    candidate_uids = {int(uid) for uid in candidate_uids}
+    targets_opponent = (
+        not has_target_templates
+        or bool(candidate_uids & set(opposing_champion_uids))
+        or any(db_card_owner_id(session.session_id, uid, conn=_db)
+               == opponent_owner_id
+               for uid in candidate_uids - set(opposing_champion_uids)))
+    return bool(targets_opponent and db_hand_count(
+        session.session_id, opponent_owner_id, conn=_db) > 0)
+
+
 def _ai_csharp_manual_ability_decision(
         handler, session, battle_state, ability_guid, source_uid,
         effect_params, ai_owner_id, opponent_owner_id, *, champion=False,
@@ -2828,7 +2911,7 @@ def _ai_csharp_manual_ability_decision(
         try:
             tac_shift = any(
                 tac_function(param) == "ShiftAbility"
-                for effect_type, param in db_ability_effect_type_params(
+                for effect_type, param in db_ability_flat_effect_type_params(
                     ability_guid, conn=_db)
                 if effect_type == "TACAbilityEffectTemplate" and param)
         except Exception:
@@ -2926,7 +3009,15 @@ def _ai_csharp_manual_ability_decision(
             "GainResourceAbilityEffectTemplate"}):
         useful = int(battle_state.get("ai_resources", 0) or 0) > 0
     if not useful and "RevealCardsAbilityEffectTemplate" in effect_types:
-        useful = True
+        own_champion = getattr(handler, "_ai_champ_scid", None)
+        hand_worth = _ai_hand_transform_worth(
+            session, ability_guid, candidate_uids, bool(template_ids),
+            _ai_opposing_champion_uids(
+                handler, int(source_uid) if champion else
+                (int(own_champion.uid.uid64) if own_champion is not None
+                 else None)),
+            opponent_owner_id)
+        useful = True if hand_worth is None else hand_worth
     if (not useful and late_phase and
             "TunnelAbilityEffectTemplate" in effect_types):
         useful = True
@@ -3284,7 +3375,10 @@ def ai_use_champion_ability(handler, game, session, ai_t, pl_t, battle_state,
             handler._resolving_ai_champion = False
         if not met:
             continue
-        effects = db_ability_effect_type_params(ag, conn=_db)
+        # Classify the BOM with ActivateAbility leaves expanded: a power such
+        # as "each opposing champion reveals ..." authors its real effects
+        # on the invoked child ability.
+        effects = db_ability_flat_effect_type_params(ag, conn=_db)
         params = []
         for etype, pm in effects:
             try:
@@ -3448,7 +3542,16 @@ def ai_use_champion_ability(handler, game, session, ai_t, pl_t, battle_state,
             # Transform target ranking. The authored target template remains
             # the source of target legality and ownership.
             candidate_uids, has_target_templates = _legal_ability_targets(ag)
-            if has_target_templates:
+            hand_worth = _ai_hand_transform_worth(
+                session, ag, candidate_uids, has_target_templates,
+                _ai_opposing_champion_uids(
+                    handler, int(ai_champ_scid.uid.uid64)),
+                player_owner_id)
+            if hand_worth is not None:
+                # Reveal-and-transform of a random hand card: the authored
+                # auto-target binds the hand owner, so no troop is chosen.
+                worth = worth or hand_worth
+            elif has_target_templates:
                 friendly_uids = {
                     int(uid) for uid in candidate_uids
                     if db_card_owner_id(
@@ -4010,9 +4113,17 @@ def ai_use_warzone_ability(handler, game, session, ai_t, pl_t, battle_state,
                     worth = True
             if not worth:
                 try:
+                    flat_params = []
+                    for etype, pm in db_ability_flat_effect_type_params(
+                            ag, conn=_db):
+                        try:
+                            flat_params.append(
+                                (etype, _j.loads(pm) if pm else {}))
+                        except Exception:
+                            flat_params.append((etype, {}))
                     case_worth, case_target = _ai_csharp_manual_ability_decision(
-                        handler, session, battle_state, ag, int(uid), params,
-                        ai_owner_id, player_owner_id,
+                        handler, session, battle_state, ag, int(uid),
+                        flat_params, ai_owner_id, player_owner_id,
                         late_phase=bool(resource_sink))
                 except Exception as exc:
                     log_req(f"    AI metadata decision case {ag[:8]} failed: "

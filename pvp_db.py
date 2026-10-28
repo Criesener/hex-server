@@ -2363,6 +2363,51 @@ def db_ability_effect_type_params(ability_guid, conn=None):
         (str(ability_guid).lower(),))
 
 
+_NULL_ABILITY_GUID = "00000000-0000-0000-0000-000000000000"
+
+
+def db_ability_flat_effect_rows(ability_guid, conn=None, max_depth=8):
+    """Return ``(owning_ability, effect_type, param, target_index)`` rows.
+
+    Each ``ActivateAbilityEffectTemplate`` row (whose ``param`` stores the
+    invoked ``m_AbilityToInvoke`` GUID) is replaced by its child ability's
+    effects, recursively.  A child already on the current expansion path, one
+    beyond ``max_depth``, or one without effect rows is not expanded and the
+    ActivateAbility row is kept as-is.  Intended for AI classification only;
+    rules execution walks the real BOM itself.
+    """
+    connection = conn or _db_layer._db
+    out = []
+
+    def walk(guid, depth, path):
+        rows = _cached_static_rows(
+            connection, ("ability_flat_effect_rows", guid),
+            "SELECT effect_type, param, target_index FROM ability_effects "
+            "WHERE ability_guid=? ORDER BY effect_order", (guid,))
+        for effect_type, param, target_index in rows:
+            child = str(param or "").strip().lower()
+            if (effect_type == "ActivateAbilityEffectTemplate" and child
+                    and child != _NULL_ABILITY_GUID
+                    and child not in path and depth < max_depth):
+                expanded_from = len(out)
+                walk(child, depth + 1, path | {child})
+                if len(out) > expanded_from:
+                    continue
+            out.append((guid, effect_type, param, target_index))
+
+    root = str(ability_guid).lower()
+    walk(root, 0, frozenset((root,)))
+    return out
+
+
+def db_ability_flat_effect_type_params(ability_guid, conn=None, max_depth=8):
+    """``db_ability_effect_type_params`` with ActivateAbility rows expanded
+    into their child abilities' effects (see db_ability_flat_effect_rows)."""
+    return [(effect_type, param) for _owner, effect_type, param, _index in
+            db_ability_flat_effect_rows(ability_guid, conn=conn,
+                                        max_depth=max_depth)]
+
+
 def db_effect_parent_ability(effect_guid, conn=None):
     """Return the ability owning one play-card effect."""
     row = (conn or _db_layer._db).execute(

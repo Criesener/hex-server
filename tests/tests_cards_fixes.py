@@ -2246,6 +2246,135 @@ def test_wind_whisperer_ai_exhausts_best_blocker(db):
     print("PASS Wind Whisperer AI targets best blocker")
 
 
+FAE_TRICKSTERS_POWER = "2bed7427-9cf6-f832-58d8-c63b48b7ab60"
+FAE_TRICKSTERS_CHILD = "2deae4d6-bb41-8035-91d1-7d940b81c048"
+
+
+def test_flat_effect_rows_expand_activate_ability(db):
+    """ActivateAbility rows expand into the invoked child's effects, and a
+    self-invoking cycle stops instead of recursing forever."""
+    from pvp_db import (db_ability_flat_effect_rows,
+                        db_ability_flat_effect_type_params)
+    _copy_ability(db, FAE_TRICKSTERS_POWER)
+    rows = db_ability_flat_effect_rows(FAE_TRICKSTERS_POWER, conn=db)
+    assert [(row[0], row[1]) for row in rows] == [
+        (FAE_TRICKSTERS_CHILD, "RevealCardsAbilityEffectTemplate"),
+        (FAE_TRICKSTERS_CHILD,
+         "TransformCardAtRandomAbilityEffectTemplate"),
+    ], rows
+    assert [row[0] for row in db_ability_flat_effect_type_params(
+        FAE_TRICKSTERS_POWER, conn=db)] == [row[1] for row in rows]
+    db.execute(
+        "INSERT INTO ability_effects (ability_guid, effect_guid, "
+        "effect_order, effect_type, param) VALUES (?,?,?,?,?)",
+        ("cycle-a", "cycle-e", 0, "ActivateAbilityEffectTemplate",
+         "cycle-a"))
+    assert db_ability_flat_effect_rows("cycle-a", conn=db) == [
+        ("cycle-a", "ActivateAbilityEffectTemplate", "cycle-a", -1)]
+
+
+def _fae_tricksters_decision(db, opponent_hand_cards):
+    import ai
+    src = sqlite3.connect(SRC)
+    db.execute("""CREATE TABLE champion_abilities (
+        champion_guid TEXT, champion_name TEXT, ability_guid TEXT,
+        ability_name TEXT, charge_cost INTEGER, spell_cost INTEGER,
+        threshold_colors TEXT, game_text TEXT, casting_behavior INTEGER,
+        thresholds_json TEXT, target_template_ids TEXT)""")
+    db.execute(
+        "INSERT INTO champion_abilities VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        src.execute(
+            "SELECT * FROM champion_abilities WHERE ability_guid=?",
+            (FAE_TRICKSTERS_POWER,)).fetchone())
+    src.close()
+    _copy_ability(db, FAE_TRICKSTERS_POWER)
+    _copy_card(db, TPL_GLADIATOR)
+    for uid in range(opponent_hand_cards):
+        add_card(db, 301 + uid, 5, TPL_GLADIATOR, loc="hand")
+    # A friendly troop must not be mistaken for the transform target.
+    add_card(db, 401, 0, TPL_GLADIATOR)
+    handler = HandlerStub(db)
+    handler._ai_champ_ability_guids = [FAE_TRICKSTERS_POWER]
+    handler._champion_thresholds_met = lambda _ag, _state: True
+    old_db, old_ai_db = dbmod._db, ai._db
+    dbmod._db = db
+    ai._db = db
+    try:
+        pl_t = game_engine.UID.make(244, 5)
+        ai_t = game_engine.UID.make(3, 1000)
+        game = game_engine.Game(1, pl_t, ai_t)
+        bstate = {"ai_charges": 2, "ai_health": 20, "player_health": 20,
+                  "ai_threshold": {16: 1, 64: 1}, "turn_number": 3}
+        return ai.ai_use_champion_ability(
+            handler, game, SessionStub(), ai_t, pl_t, bstate,
+            decision_only=True)
+    finally:
+        dbmod._db, ai._db = old_db, old_ai_db
+
+
+def test_fae_tricksters_ai_transforms_opponent_hand(db):
+    """Crazed Chicanery's effects live on its ActivateAbility child; the AI
+    uses it whenever the opposing hand has a card, without a troop target."""
+    decision = _fae_tricksters_decision(db, 2)
+    assert decision and decision["ability_guid"] == FAE_TRICKSTERS_POWER, \
+        decision
+    assert decision["target_uid"] is None, decision
+
+
+def test_fae_tricksters_ai_skips_empty_opponent_hand(db):
+    decision = _fae_tricksters_decision(db, 0)
+    assert decision is None, decision
+
+
+def test_leyline_convergence_hand_transform_discounts_once(db):
+    """Leyline Convergence grants each champion "When a card in your hand
+    transforms, it gets cost -2". A transform in the player's hand must fire
+    only the hand owner's grant, once, for exactly -2."""
+    from rules_port.triggers import dispatch_native_trigger
+    from rules_port.resolution import resolve_port_trigger
+    granted = "81777cb2-0ee8-12cb-b209-32f6ecc6d4ed"
+    _copy_ability(db, granted)
+    _copy_card(db, TPL_GLADIATOR)
+    add_card(db, 501, 5, TPL_GLADIATOR, loc="hand")
+    handler = HandlerStub(db)
+    player_champion = int(handler._player_champ_scid.uid.uid64)
+    ai_champion = int(handler._ai_champ_scid.uid.uid64)
+    handler._champion_granted_ability_guids = {
+        player_champion: [granted], ai_champion: [granted]}
+    pl_t = game_engine.UID.make(244, 5)
+    ai_t = game_engine.UID.make(3, 1000)
+    game = game_engine.Game(1, pl_t, ai_t)
+    bstate = {"player_health": 20, "ai_health": 20, "turn_number": 3,
+              "stack": []}
+    old_db = dbmod._db
+    dbmod._db = db
+    try:
+        before = db.execute(
+            "SELECT card_cost_mod, permanent_buffs FROM game_cards "
+            "WHERE card_uid=501").fetchone()
+        # The transform publishes both events; only CardTransformsEvent is
+        # the granted ability's authored trigger.
+        for event_type in ("CardTransformedEvent", "CardTransformsEvent"):
+            dispatch_native_trigger(
+                db=db, handler=handler, game=game, session=SessionStub(),
+                player_uid=pl_t, ai_uid=ai_t, battle_state=bstate,
+                event_type=event_type, source_card_id=501,
+                source_player_id=5)
+        items = [item for item in bstate.get("stack") or []
+                 if item.get("ability_guid") == granted]
+        assert len(items) == 1, items
+        assert int(items[0]["source_uid"]) == player_champion, items
+        resolve_port_trigger(handler, game, SessionStub(), db, pl_t, ai_t,
+                             bstate, items[0])
+        after = db.execute(
+            "SELECT card_cost_mod, permanent_buffs FROM game_cards "
+            "WHERE card_uid=501").fetchone()
+        assert int(after[0]) == int(before[0]) - 2, (before, after)
+        assert after[1] == before[1], (before, after)
+    finally:
+        dbmod._db = old_db
+
+
 def test_ai_action_targets_follow_effect_and_require_legal_selection(db):
     """Removal/buffs follow C# target-side value rules; required targets
     cannot silently degrade into a targetless action.
@@ -2503,6 +2632,14 @@ def main():
          test_blood_cauldron_ai_pays_sacrifice_cost),
         ("Wind Whisperer AI targets best blocker",
          test_wind_whisperer_ai_exhausts_best_blocker),
+        ("Flattened BOM expands ActivateAbility",
+         test_flat_effect_rows_expand_activate_ability),
+        ("Fae Tricksters AI transforms opponent hand",
+         test_fae_tricksters_ai_transforms_opponent_hand),
+        ("Fae Tricksters AI skips empty opponent hand",
+         test_fae_tricksters_ai_skips_empty_opponent_hand),
+        ("Leyline Convergence hand transform discounts once",
+         test_leyline_convergence_hand_transform_discounts_once),
         ("AI action target side and required-target safety",
          test_ai_action_targets_follow_effect_and_require_legal_selection),
         ("Concubunny exhausts selected ready Shin'hare",
