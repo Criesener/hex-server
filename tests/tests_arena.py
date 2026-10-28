@@ -344,6 +344,40 @@ def test_start_encounter_fra_flags_are_transient():
     assert live_fields["ArenaOwner"] == 22
 
 
+def test_campaign_setup_session_is_pve_so_equipment_shows():
+    """Issue #20: GoHUDPlayer draws deck equipment only for IsPvE sessions.
+
+    Campaign ReadyForGameSetup must carry IsEncounter | IsPvE and the scene;
+    the transient StartEncounter projection keeps IsPvE off, like FRA.
+    """
+    import campaign
+    import game_engine
+    import hconnect_server
+    import pve_db
+
+    scene = "ab77df1e-5f13-471b-80e7-b7b4824ca280"
+    flags = game_engine.ESessionFlags
+    assert hconnect_server._campaign_setup_values("tourney-1-2") is None
+    with mock.patch.dict(campaign._last_encounter_scene, {"camp_7": scene}):
+        values = hconnect_server._campaign_setup_values("camp_7")
+    assert values == {"scene": scene,
+                      "flags": int(flags.IsEncounter | flags.IsPvE)}, values
+
+    # The launch hint is consumed by battle setup; fall back to the saved scene.
+    saved = json.dumps({"ActiveEncounterGuid": scene})
+    with mock.patch.object(pve_db, "db_campaign_state", return_value=saved):
+        assert hconnect_server._campaign_setup_values("camp_8")["scene"] == scene
+
+    live = hconnect_server._campaign_session_state_data(values)
+    transient = hconnect_server._campaign_session_state_data(
+        values, flags=flags.IsEncounter)
+    live_fields = {name: value for name, _type, value in live[1][1]}
+    transient_fields = {name: value for name, _type, value in transient[1][1]}
+    assert live_fields["SessionFlags"][1] == int(flags.IsEncounter | flags.IsPvE)
+    assert transient_fields["SessionFlags"][1] == int(flags.IsEncounter)
+    assert live_fields["SceneTemplateId"][1][0][2] == scene
+
+
 def _arena_reward_challenger(index, *, boss=False, elite=False):
     return {
         "id": index + 1,
@@ -688,6 +722,7 @@ if __name__ == "__main__":
     test_claim_arena_rewards_closes_a_run_without_rewards()
     test_destroy_arena_responds_and_clears_roster()
     test_start_encounter_fra_flags_are_transient()
+    test_campaign_setup_session_is_pve_so_equipment_shows()
     test_elite_win_pairs_reward_with_that_tiers_boss_modification()
     test_accepted_challenge_win_removes_one_strike()
     test_lossless_tier_win_uses_perfected_tier_strike_removal()

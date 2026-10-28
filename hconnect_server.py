@@ -917,6 +917,34 @@ def _fra_arena_session_state_data(values, flags=None):
     ]))
 
 
+def _campaign_setup_values(session_name, conn=None):
+    """Encounter identity of a campaign (``camp_<id>``) battle session.
+
+    The client draws deck equipment only for sessions flagged IsPvE (or with
+    a ServiceAI opponent, which the campaign AI is not), so the setup packets
+    must carry the same flags the original server used for encounters.
+    """
+    if not str(session_name or "").startswith("camp_"):
+        return None
+    scene_guid = campaign.session_encounter_scene(conn, session_name)
+    return {
+        "scene": str(scene_guid or "00000000-0000-0000-0000-000000000000"),
+        "flags": int(game_engine.ESessionFlags.IsEncounter |
+                     game_engine.ESessionFlags.IsPvE),
+    }
+
+
+def _campaign_session_state_data(values, flags=None):
+    """Build the campaign EncounterData object used in client setup responses."""
+    return ("struct", ("Game.Shared.SessionStateEncounterData", [
+        ("SceneTemplateId", "struct", ("Game.Shared.ResourceId", [
+            ("m_Guid", "guid", values["scene"])])),
+        ("SessionFlags", "enum1", (
+            "Game.Shared.ESessionFlags",
+            values["flags"] if flags is None else int(flags))),
+    ]))
+
+
 class HCPHandler(ProfileStreamMixin):
     def __init__(self, conn, addr):
         self.conn = conn
@@ -16416,19 +16444,14 @@ class HCPHandler(ProfileStreamMixin):
             # and can leave the scene on the starfield.
             response_encounter_data = ("class", "Game.Shared.SessionStateEncounterData")
             fra_setup = _fra_arena_setup_values(encounter_data_raw)
-            if str(session_name).startswith("camp_"):
-                scene_guid = campaign._last_encounter_scene.get(str(session_name))
-                if scene_guid:
-                    response_encounter_data = ("struct", (
-                        "Game.Shared.SessionStateEncounterData", [
-                            ("SceneTemplateId", "struct", (
-                                "Game.Shared.ResourceId", [
-                                    ("m_Guid", "guid", str(scene_guid))])),
-                            ("SessionFlags", "enum1", (
-                                "Game.Shared.ESessionFlags",
-                                game_engine.ESessionFlags.IsEncounter |
-                                game_engine.ESessionFlags.IsPvE)),
-                        ]))
+            camp_setup = _campaign_setup_values(session_name, conn=_db)
+            if camp_setup is not None:
+                # IsPvE goes on the ReadyForGameSetup session only, as for
+                # FRA below: each PvE session the client creates appends
+                # another challenge-event handler.
+                if campaign._last_encounter_scene.get(str(session_name)):
+                    response_encounter_data = _campaign_session_state_data(
+                        camp_setup, flags=game_engine.ESessionFlags.IsEncounter)
             elif fra_setup is not None:
                 # The client replaces its arena battle context with this
                 # StartEncounter response. Preserve the arena IDs for the
@@ -16594,10 +16617,13 @@ class HCPHandler(ProfileStreamMixin):
             )).value
             if session:
                 fra_setup = _fra_arena_setup_values(session.encounter_data)
-                setup_encounter_data = (
-                    _fra_arena_session_state_data(fra_setup)
-                    if fra_setup is not None else
-                    ("class", "Game.Shared.SessionStateEncounterData"))
+                camp_setup = _campaign_setup_values(session.session_name, conn=_db)
+                if fra_setup is not None:
+                    setup_encounter_data = _fra_arena_session_state_data(fra_setup)
+                elif camp_setup is not None:
+                    setup_encounter_data = _campaign_session_state_data(camp_setup)
+                else:
+                    setup_encounter_data = ("class", "Game.Shared.SessionStateEncounterData")
                 resp_inner = encode_objfmt_response(
                     ["Game.Client.Network.LoadBalancer.ReadyForGameSetupResponse",
                      "Game.Shared.SessionState", "Game.Shared.UID",
@@ -16843,14 +16869,20 @@ class HCPHandler(ProfileStreamMixin):
                         f"flags={rfg_fra_setup['flags']} "
                         f"arena={rfg_fra_setup['arena_instance']} "
                         f"owner={rfg_fra_setup['arena_owner']}")
+            rfg_setup = rfg_fra_setup or _campaign_setup_values(
+                session.session_name, conn=_db)
+            if rfg_setup is not None and rfg_fra_setup is None:
+                log_req("    ReadyForGameSetup campaign data: "
+                        f"flags={rfg_setup['flags']} scene={rfg_setup['scene']}")
 
             # SessionState
             fss = rfg_buf.tell(); rfg_sz.append(0); fss_idx = len(rfg_sz)-1
             rfg_w("SessionState"); rfg_sp(); rfg_w(str(fss_idx)); rfg_sp()
             rfg_w(str(rfg_ft("Game.Shared.SessionState"))); rfg_sp(); rfg_w("6"); rfg_sp()
             # The client rebuilds SessionClient from this setup response.
-            # Preserve FRA identity for challenge UI and reconnect handling.
-            if rfg_fra_setup is None:
+            # Preserve FRA/campaign identity for challenge UI, equipment and
+            # reconnect handling.
+            if rfg_setup is None:
                 f_ed = rfg_buf.tell(); rfg_sz.append(0); ed_idx = len(rfg_sz)-1
                 rfg_w("EncounterData"); rfg_sp(); rfg_w(str(ed_idx)); rfg_sp()
                 rfg_w(str(rfg_ft("Game.Shared.SessionStateEncounterData"))); rfg_sp(); rfg_w("0"); rfg_sp()
@@ -16858,7 +16890,7 @@ class HCPHandler(ProfileStreamMixin):
             else:
                 f_ed = rfg_buf.tell(); rfg_sz.append(0); ed_idx = len(rfg_sz)-1
                 rfg_w("EncounterData"); rfg_sp(); rfg_w(str(ed_idx)); rfg_sp()
-                rfg_w(str(rfg_ft("Game.Shared.SessionStateEncounterData"))); rfg_sp(); rfg_w("4"); rfg_sp()
+                rfg_w(str(rfg_ft("Game.Shared.SessionStateEncounterData"))); rfg_sp(); rfg_w("4" if rfg_fra_setup is not None else "2"); rfg_sp()
 
                 f_scene = rfg_buf.tell(); rfg_sz.append(0); scene_idx = len(rfg_sz)-1
                 rfg_w("SceneTemplateId"); rfg_sp(); rfg_w(str(scene_idx)); rfg_sp()
@@ -16866,7 +16898,8 @@ class HCPHandler(ProfileStreamMixin):
                 f_scene_guid = rfg_buf.tell(); rfg_sz.append(0); scene_guid_idx = len(rfg_sz)-1
                 rfg_w("m_Guid"); rfg_sp(); rfg_w(str(scene_guid_idx)); rfg_sp()
                 rfg_w(str(rfg_ft("System.Guid"))); rfg_sp(); rfg_w("0"); rfg_sp()
-                rfg_w("36"); rfg_sp(); rfg_buf.write(b"00000000-0000-0000-0000-000000000000")
+                rfg_w("36"); rfg_sp(); rfg_buf.write(
+                    rfg_setup.get("scene", "00000000-0000-0000-0000-000000000000").encode("ascii"))
                 rfg_sz[scene_guid_idx] = rfg_buf.tell() - f_scene_guid
                 rfg_sz[scene_idx] = rfg_buf.tell() - f_scene
 
@@ -16876,12 +16909,13 @@ class HCPHandler(ProfileStreamMixin):
                 f_flags_value = rfg_buf.tell(); rfg_sz.append(0); flags_value_idx = len(rfg_sz)-1
                 rfg_w("value__"); rfg_sp(); rfg_w(str(flags_value_idx)); rfg_sp()
                 rfg_w(str(rfg_ft("System.Int32"))); rfg_sp(); rfg_w("0"); rfg_sp()
-                rfg_w(hexlify(struct.pack("<i", rfg_fra_setup["flags"])).decode("ascii")); rfg_sp()
+                rfg_w(hexlify(struct.pack("<i", rfg_setup["flags"])).decode("ascii")); rfg_sp()
                 rfg_sz[flags_value_idx] = rfg_buf.tell() - f_flags_value
                 rfg_sz[flags_idx] = rfg_buf.tell() - f_flags
 
-                for field_name, value in (("ArenaInstance", rfg_fra_setup["arena_instance"]),
-                                          ("ArenaOwner", rfg_fra_setup["arena_owner"])):
+                for field_name, value in (() if rfg_fra_setup is None else (
+                        ("ArenaInstance", rfg_fra_setup["arena_instance"]),
+                        ("ArenaOwner", rfg_fra_setup["arena_owner"]))):
                     f_arena = rfg_buf.tell(); rfg_sz.append(0); arena_idx = len(rfg_sz)-1
                     rfg_w(field_name); rfg_sp(); rfg_w(str(arena_idx)); rfg_sp()
                     rfg_w(str(rfg_ft("System.UInt64"))); rfg_sp(); rfg_w("0"); rfg_sp()

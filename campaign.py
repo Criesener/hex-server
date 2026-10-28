@@ -6888,6 +6888,29 @@ def handle_battle_gameend(handler, db, session, won, service_mail_uid,
         return False
 
 
+def session_encounter_scene(db, session_name):
+    """Scene GUID of the encounter a ``camp_<id>`` session is fighting.
+
+    The in-memory launch hint is consumed by ``resolve_battle_config``, so
+    later setup packets fall back to the persisted ``ActiveEncounterGuid``.
+    """
+    name = str(session_name or "")
+    if not name.startswith("camp_"):
+        return None
+    scene_guid = _last_encounter_scene.get(name)
+    if scene_guid:
+        return scene_guid
+    try:
+        camp_id = int(name.split("_")[-1] or 0)
+    except ValueError:
+        return None
+    saved_state = pve_db.db_campaign_state(camp_id, conn=db) if camp_id else None
+    try:
+        return json.loads(saved_state or "{}").get("ActiveEncounterGuid")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
 def _launch_encounter(handler, db, camp_id, champ_id, encounter_guid,
                       deck_uid64, comp, session_id, target, instance, conh, uid):
     """Push a 'gamestarted' notification launching an encounter battle.
