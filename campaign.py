@@ -2888,6 +2888,23 @@ def _repair_az0_leftovers_in_area(state):
             state.pop("LastNode", None)
 
 
+def _reopen_failed_encounters(state):
+    """Re-open encounter nodes a defeat's result dialogue completed (#19).
+
+    A won encounter leaves ``failed_nodes``, so a node that is still listed
+    there yet marked completed was closed by an older server when its failure
+    conversation ended, which removed its Explore action for good.
+    """
+    failed = {str(node) for node in ((
+        (state.get("PublicState") or {}).get("Data") or {}).get(
+            "failed_nodes") or []) if node}
+    for loc in state.get("VisLocs") or []:
+        data = loc.get("Data") or {}
+        if (str(data.get("node") or "") in failed and data.get("completed")
+                and data.get("type") == "Encounter" and data.get("encounter")):
+            data["completed"] = False
+
+
 def _sync_az1_quest_gates(db, champ_id, state):
     """Reapply active quest start hooks after reconnects or state rebuilds.
 
@@ -2901,6 +2918,7 @@ def _sync_az1_quest_gates(db, champ_id, state):
         return False
     before = json.dumps(state, sort_keys=True)
     _repair_az0_leftovers_in_area(state)
+    _reopen_failed_encounters(state)
     _backfill_visited_quest_starts(db, champ_id, state)
     hooks = pve_db.db_active_quest_hooks(champ_id, conn=db)
     for _quest_id, hook_name in hooks:
@@ -5238,6 +5256,9 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
                     bool(current_data.get("repeatable")) and
                     not quest_variant_terminal)
                 outcome_convo = bool(current_data.get("outcome_conversation"))
+                # A defeat's result dialogue must leave its encounter open
+                # (issue #19); older saves carry no flag and were victories.
+                outcome_won = bool(current_data.get("outcome_won", True))
                 pre_encounter_convo = bool(current_data.get("pre_encounter"))
                 quest_turnin_convo = bool(current_data.get("turninquest"))
                 blockade_convo = (
@@ -5246,10 +5267,15 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
                     current_data.get("type") == "Convo" and
                     not outcome_convo and not pre_encounter_convo)
                 if outcome_convo:
-                    # A one-shot result dialogue follows a completed battle;
-                    # closing it completes the map node even though the
-                    # underlying location retains its pre-encounter marker.
-                    _mark_location_completed(state, current)
+                    # A one-shot result dialogue follows a battle.  Closing a
+                    # victory's dialogue completes the map node even though
+                    # the underlying location retains its pre-encounter
+                    # marker; a defeat's dialogue leaves the encounter open
+                    # so it can be explored again (issue #19).
+                    if outcome_won:
+                        _mark_location_completed(state, current)
+                    else:
+                        current_data["completed"] = False
                     current_data["autostart"] = False
                 elif blockade_convo:
                     # The first Brink Ridge conversation only explains the
@@ -5316,6 +5342,7 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
                         "conversationId": None,
                         "autostart": False,
                     })
+                    current_data.pop("outcome_won", None)
                 # Quest assignment is driven by the extracted conversation
                 # catalog.  One conversation may grant several quests (for
                 # example Tamed plus the faction Find quest).
@@ -5364,8 +5391,9 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
                                           conh, uid)
                 # A pre-encounter conversation promotes its location back to
                 # the authored battle scene. A result conversation does the
-                # same promotion, but leaves the already-won node complete
-                # and clears ALoc so travel can continue.
+                # same promotion, but leaves an already-won node complete (a
+                # lost one stays open to retry) and clears ALoc so travel can
+                # continue.
                 if current_data.get("pre_encounter") and not outcome_convo:
                     current_data.update({
                         "type": "Encounter",
@@ -5384,7 +5412,7 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
                     current_data.update({
                         "type": "Encounter",
                         "conversationId": None,
-                        "completed": True,
+                        "completed": outcome_won,
                         "pre_encounter_completed": True,
                         "autostart": False,
                     })
@@ -5831,6 +5859,7 @@ def _apply_gameend(db, camp_id, won):
                     "completed": False,
                     "repeatable": False,
                     "outcome_conversation": True,
+                    "outcome_won": bool(won),
                     "autostart": True,
                     "enabled": True,
                     "visible": True,

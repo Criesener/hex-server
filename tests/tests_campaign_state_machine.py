@@ -154,6 +154,72 @@ def test_area_gameend_keeps_the_hero_on_the_encounter_node():
         os.unlink(path)
 
 
+def test_savage_lord_defeat_conversation_keeps_the_encounter_open():
+    """Issue #19: closing a defeat's result dialogue completed the node."""
+    db, path = cloned_db()
+    original_send_response = campaign._send_response
+    original_push_campupdate = campaign.push_campupdate
+    original_push_campspawn = campaign.push_campspawn
+    try:
+        area_id, state = area_state(db)
+        node = next(loc["Data"] for loc in state["VisLocs"]
+                    if loc["Data"].get("node") == "Node014")
+        node.update({"type": "Encounter", "encounter": SAVAGE_LORD,
+                     "completed": False, "visible": True, "enabled": True})
+        state["ALoc"] = node.get("name") or "Node014"
+        state["ActiveEncounterGuid"] = SAVAGE_LORD
+        db.execute("UPDATE campaigns SET state_json=? WHERE id=?",
+                   (json.dumps(state), area_id))
+        db.commit()
+        _camp_id, result = campaign._apply_gameend(db, area_id, False)
+        lost = next(loc["Data"] for loc in result["VisLocs"]
+                    if loc["Data"].get("node") == "Node014")
+        assert lost.get("outcome_conversation") and lost["type"] == "Convo", lost
+        assert lost.get("outcome_won") is False, lost
+        db.execute("UPDATE campaigns SET state_json=? WHERE id=?",
+                   (json.dumps(result), area_id))
+        db.commit()
+
+        campaign._send_response = lambda *args, **kwargs: None
+        campaign.push_campupdate = lambda *args, **kwargs: None
+        campaign.push_campspawn = lambda *args, **kwargs: None
+        handler = SimpleNamespace(_log_req=lambda *_args: None)
+        campaign._handle_sendevent(
+            handler, db,
+            {"CampID": area_id, "Event": "conv_done", "OParms": None},
+            0, "", 0, "ServiceCampaign", "253", 0, 0)
+        after = json.loads(db.execute(
+            "SELECT state_json FROM campaigns WHERE id=?", (area_id,)
+        ).fetchone()[0])
+        reopened = next(loc["Data"] for loc in after["VisLocs"]
+                        if loc["Data"].get("node") == "Node014")
+        assert reopened.get("completed") is False, reopened
+        assert not reopened.get("outcome_conversation"), reopened
+        assert "Node014" in after["PublicState"]["Data"]["failed_nodes"]
+    finally:
+        campaign._send_response = original_send_response
+        campaign.push_campupdate = original_push_campupdate
+        campaign.push_campspawn = original_push_campspawn
+        db.close()
+        os.unlink(path)
+
+
+def test_failed_and_completed_encounters_are_reopened():
+    """Issue #19: saves already closed by a defeat dialogue are repaired."""
+    state = {
+        "VisLocs": [
+            {"Data": {"node": "Node014", "type": "Encounter",
+                      "encounter": SAVAGE_LORD, "completed": True}},
+            {"Data": {"node": "Node013", "type": "Encounter",
+                      "encounter": "won", "completed": True}},
+        ],
+        "PublicState": {"Data": {"failed_nodes": ["Node014"]}},
+    }
+    campaign._reopen_failed_encounters(state)
+    assert state["VisLocs"][0]["Data"]["completed"] is False
+    assert state["VisLocs"][1]["Data"]["completed"] is True
+
+
 def test_area_state_repair_drops_az0_trainer_leftovers():
     """Issue #1: saves that already stored the trainer are repaired."""
     trainer = next(iter(campaign._AZ0_RACE_CONFIG.values()))["trainer_npc"]
@@ -1813,6 +1879,8 @@ if __name__ == "__main__":
         test_winston_step1_starts_cross_the_river,
         test_area_gameend_keeps_the_hero_on_the_encounter_node,
         test_area_state_repair_drops_az0_trainer_leftovers,
+        test_savage_lord_defeat_conversation_keeps_the_encounter_open,
+        test_failed_and_completed_encounters_are_reopened,
         test_visited_winston_backfills_the_missing_cross_the_river_quest,
         test_az1_unfinished_encounter_does_not_reveal_outgoing_paths,
         test_az1_unvisited_repeatable_conversations_are_not_blue,
