@@ -2400,6 +2400,48 @@ def test_tranquil_dream_run_completes_its_quest_objective():
         os.unlink(path)
 
 
+def test_tranquil_dream_pays_by_win_order_and_boss():
+    """Dungeon payouts follow the order of the run's wins, not the room;
+    the finale pays the boss tier with the Tranquil Dream Pack."""
+    from types import SimpleNamespace
+    db, path = cloned_db()
+    client = _DungeonClient(db)
+    try:
+        _area_id, camp_id = _enter_dungeon(db, client, 6, "Node040")
+        state = client.state(camp_id)
+        rooms = {room["title"]: room for room in state["DungeonRun"]["rooms"]}
+        order = ("Dream Spider", "Dream Eagle", "Dream Bear", "Dream Turtle",
+                 "Dream Skarn")
+        expected = ((75, 100), (75, 150), (125, 175), (125, 200), (150, 250))
+        for index, (title, (gold, xp)) in enumerate(zip(order, expected)):
+            scene = rooms[title]["stages"][0]["encounter"]
+            session = SimpleNamespace(session_id=100 + index)
+            records = campaign._dungeon_run_reward_records(
+                state, scene, session)
+            assert records == [{"gold": gold, "xp": xp,
+                                "one_time": False}], (title, records)
+            # The same game-end again keeps its tier.
+            assert campaign._dungeon_run_reward_records(
+                state, scene, session) == records
+        boss = rooms["Sister Midnight"]["stages"][0]["encounter"]
+        records = campaign._dungeon_run_reward_records(
+            state, boss, SimpleNamespace(session_id=200))
+        assert records == [{"gold": 200, "xp": 350, "one_time": False,
+                            "chest_guid": "88d29ef0-5ec7-49b1-bcc5-8f70c5c4cda5"}], records
+        # Every generic dungeon shares the tiers; its boss grants its pack.
+        usurper = campaign._dungeon_reward_schedule("The Usurper")
+        assert usurper["battles"][0] == {"gold": 75, "xp": 100}, usurper
+        assert usurper["boss"]["chest_guid"] == \
+            "eda1cb9f-9900-4218-a8d1-6564573a9cf2", usurper
+        # Overworld battles keep their scene rewards.
+        assert campaign._dungeon_run_reward_records(
+            client.state(_area_id), boss, SimpleNamespace(session_id=1)) is None
+    finally:
+        client.restore()
+        db.close()
+        os.unlink(path)
+
+
 def test_az1_dungeons_play_through_the_generic_runner():
     """Every AZ1 dungeon the client can render runs end to end."""
     db, path = cloned_db()
@@ -2637,6 +2679,7 @@ if __name__ == "__main__":
         test_dungeon_entrances_are_never_deckless_battles,
         test_tranquil_dream_entrance_starts_its_dungeon,
         test_tranquil_dream_run_completes_its_quest_objective,
+        test_tranquil_dream_pays_by_win_order_and_boss,
         test_az1_dungeons_play_through_the_generic_runner,
         test_start_event_on_a_dungeon_entrance_enters_it,
         test_leaving_a_dungeon_returns_to_its_entrance,

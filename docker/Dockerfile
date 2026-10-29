@@ -27,6 +27,7 @@ COPY *.py /hex/
 COPY redeem_bundles.json /hex/redeem_bundles.json
 COPY account_levels.json /hex/account_levels.json
 COPY server_perks.json /hex/server_perks.json
+COPY dungeon_rewards.json /hex/dungeon_rewards.json
 COPY AssetExtraction/ /hex/AssetExtraction/
 COPY abilities/ /hex/abilities/
 COPY application/ /hex/application/

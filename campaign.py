@@ -7512,6 +7512,68 @@ def _apply_encounter_end_rewards_legacy(handler, db, session, camp_id, won):
     return granted
 
 
+_DUNGEON_REWARDS_PATH = Path(__file__).resolve().parent / "dungeon_rewards.json"
+
+
+def _dungeon_reward_schedule(template_name):
+    """Return the per-run payout of one dungeon, or None.
+
+    ``_default`` applies to every generic dungeon; a named entry overrides
+    it.  The boss tier also grants the dungeon's own pack.
+    """
+    try:
+        data = json.loads(_DUNGEON_REWARDS_PATH.read_text())
+    except (OSError, ValueError):
+        return None
+    name = str(template_name or "")
+    schedule = dict(data.get("_default") or {})
+    override = data.get(name)
+    if isinstance(override, dict):
+        schedule.update(override)
+    if not schedule:
+        return None
+    pack = (data.get("packs") or {}).get(name)
+    if pack and isinstance(schedule.get("boss"), dict):
+        schedule["boss"] = dict(schedule["boss"], chest_guid=pack)
+    return schedule
+
+
+def _dungeon_run_reward_records(state, scene_guid, session):
+    """Reward records for a battle won inside a generic dungeon run.
+
+    The payout follows the order of the run's wins, not the room: the first
+    animal beaten in The Tranquil Dream pays the first tier, whichever it is.
+    The finale room's battle pays the boss tier.  The run remembers which
+    game session earned which tier, so a repeated game-end is idempotent.
+    """
+    if not scene_guid or not _is_generic_dungeon(state):
+        return None
+    run = state.get("DungeonRun") or {}
+    schedule = _dungeon_reward_schedule(run.get("name"))
+    if not schedule:
+        return None
+    finale = _drun_finale(run)
+    rooms = run.get("rooms") or []
+    boss_scenes = ({str(stage.get("encounter") or "").lower()
+                    for stage in rooms[finale].get("stages") or []}
+                   if finale is not None else set())
+    if str(scene_guid).lower() in boss_scenes:
+        reward = schedule.get("boss")
+    else:
+        battles = [entry for entry in schedule.get("battles") or []
+                   if isinstance(entry, dict)]
+        if not battles:
+            return None
+        earned = run.setdefault("reward_sessions", [])
+        key = str(session.session_id)
+        if key not in earned:
+            earned.append(key)
+        reward = battles[min(earned.index(key), len(battles) - 1)]
+    if not isinstance(reward, dict):
+        return None
+    return [dict(reward, one_time=False)]
+
+
 def _apply_encounter_end_rewards(handler, db, session, camp_id, won):
     """Apply authored encounter rewards and return campaign AppliedUpdates.
 
@@ -7533,7 +7595,8 @@ def _apply_encounter_end_rewards(handler, db, session, camp_id, won):
         state = {}
     scene_guid = state.get("ActiveEncounterGuid") or _last_encounter_scene.get(
         session.session_name or "")
-    records = _scene_reward_records(db, scene_guid)
+    records = (_dungeon_run_reward_records(state, scene_guid, session)
+               or _scene_reward_records(db, scene_guid))
     if not records:
         return result
     result["scene_guid"] = str(scene_guid) if scene_guid else None
