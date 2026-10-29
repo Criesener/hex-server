@@ -959,6 +959,16 @@ DDL = [
         ON campaign_node_conversations(campaign_template, node_id, priority)
     """,
     """
+    CREATE TABLE IF NOT EXISTS dungeon_templates (
+        guid TEXT PRIMARY KEY,
+        name TEXT NOT NULL DEFAULT '',
+        entrance_scene_guid TEXT NOT NULL DEFAULT '',
+        entrance_node TEXT NOT NULL DEFAULT '',
+        rooms_json TEXT NOT NULL DEFAULT '[]',
+        issues_json TEXT NOT NULL DEFAULT '[]'
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS quest_templates (
         script_name TEXT PRIMARY KEY,
         name TEXT NOT NULL DEFAULT '',
@@ -1628,8 +1638,75 @@ def _path_seed_rows(template, path_names):
     return rows
 
 
+# Dungeon map prefabs, keyed by their Resources root.  The node names and
+# ``Path_<A>_<B>`` objects are read from each ``<root>/prefabs/nodes`` prefab
+# in ``resources.assets`` (AssetExtraction/extract_dungeon_prefabs.py); the
+# DungeonTemplate records only carry the node IDs, not the paths between
+# them.  A dungeon template is bound to its prefab by name at runtime.
+DUNGEON_PREFAB_PATHS = {
+    "campaign/az01/crayburncastle": """
+Path_Drawbridge_WatchTower Path_CastleGate_Drawbridge Path_CastleGate_InnerBailey
+Path_InnerBailey_TowerGate Path_PenworthTower_TowerGate
+""".split(),
+    "campaign/az01/devonshirekeep": """
+Path_Node001_NodeA Path_NodeA_NodeB Path_NodeB_NodeC Path_NodeC_NodeD
+Path_NodeA_NodeE Path_NodeE_NodeF Path_NodeF_NodeH Path_NodeE_NodeG
+Path_NodeG_NodeI Path_NodeH_NodeI Path_NodeH_NodeJ Path_NodeI_NodeJ
+Path_NodeJ_NodeK Path_NodeK_NodeL
+""".split(),
+    "campaign/az01/fortromor": """
+Path_Node7_NodeA Path_Node7_NodeB Path_NodeA_NodeD Path_Node6_NodeC
+Path_Node6_Node7 Path_Node6_NodeD Path_NodeD_NodeE Path_Node6_NodeE
+Path_Node6_Node8 Path_Node8_NodeB Path_Node8_NodeC Path_Node001_NodeA
+""".split(),
+    "campaign/az01/smolderingdead": """
+Path_NodeA_NodeB Path_NodeB_NodeC Path_NodeB_NodeD Path_NodeD_NodeF
+Path_NodeF_NodeG
+""".split(),
+    "campaign/az01/theusurper": """
+Path_Entrance_NodeA Path_NodeA_NodeB Path_Fork1_NodeB Path_Fork1_NodeC
+Path_Fork1_NodeD Path_Fork2_NodeC Path_Fork2_NodeD Path_Fork2_NodeE
+Path_NodeE_NodeF Path_NodeF_NodeG
+""".split(),
+    "campaign/az01/tranquildream": """
+Path_NodeA_NodeG Path_NodeB_NodeG Path_NodeC_NodeG Path_NodeD_NodeG
+Path_NodeE_NodeG Path_NodeF_NodeG
+""".split(),
+    "campaign/az02/brutecrownbluff": """
+Path_NodeA_NodeB Path_NodeB_NodeC Path_ForkCDEFG_NodeC Path_ForkCDEFG_NodeD
+Path_ForkCDEFG_NodeE Path_ForkCDEFG_NodeF Path_ForkCDEFG_NodeG Path_NodeE_NodeH
+Path_ForkFGH_NodeF Path_ForkFGH_NodeG Path_ForkFGH_NodeH Path_NodeH_NodeI
+Path_NodeI_NodeJ
+""".split(),
+    "campaign/az02/greatmachinegraveyard": """
+Path_NodeA_NodeB Path_NodeB_NodeC Path_NodeB_NodeD Path_NodeD_NodeE
+Path_NodeE_NodeF Path_NodeF_NodeG Path_NodeC_NodeG Path_NodeG_NodeH
+Path_NodeH_NodeI Path_NodeH_NodeJ Path_NodeH_NodeK Path_NodeH_NodeL
+Path_NodeH_NodeM Path_NodeM_NodeN
+""".split(),
+    "campaign/az02/kraken": """
+Path_Node000_NodeA Path_NodeA_NodeB Path_NodeA_NodeD Path_NodeD_NodeE
+Path_NodeE_NodeF Path_NodeF_NodeG Path_NodeF_NodeI Path_NodeG_NodeJ
+Path_NodeG_NodeH Path_NodeI_NodeJ Path_NodeJ_NodeK Path_NodeK_NodeL
+Path_NodeL_NodeM Path_NodeL_NodeN Path_NodeN_NodeO Path_NodeO_NodeP
+""".split(),
+    "campaign/az02/ruinsofkukatan": """
+Path_Node001_NodeA Path_NodeA_NodeB Path_NodeA_NodeC Path_NodeA_NodeT
+Path_NodeB_NodeC Path_NodeB_NodeD Path_NodeC_NodeD Path_ForkD_NodeH
+Path_ForkD_NodeO Path_ForkD_NodeD Path_NodeD_NodeE Path_NodeE_NodeF
+Path_NodeF_NodeG Path_NodeH_NodeI Path_NodeI_NodeJ Path_NodeJ_NodeK
+Path_NodeK_NodeL Path_NodeK_NodeM Path_NodeL_NodeM Path_NodeM_NodeN
+Path_NodeM_NodeQ Path_ForkO1_NodeR Path_ForkO1_ForkO2 Path_ForkO1_NodeO
+Path_ForkO2_NodeR Path_ForkO2_NodeP Path_ForkP1_NodeP Path_ForkP1_NodeK
+Path_ForkP1_NodeQ Path_ForkP1_NodeM Path_NodeR_NodeS
+""".split(),
+}
+
+
 AZ1_NODE_EDGE_SEEDS = (_path_seed_rows("AZ1", _AZ1_PATH_NAMES) +
-                       _path_seed_rows("AZ2", _AZ2_PATH_NAMES))
+                       _path_seed_rows("AZ2", _AZ2_PATH_NAMES) +
+                       [row for root, paths in sorted(DUNGEON_PREFAB_PATHS.items())
+                        for row in _path_seed_rows(root, paths)])
 
 
 # ---------------------------------------------------------------------------

@@ -17,6 +17,7 @@ Request types:
   cheat       - Cheat commands
 """
 
+import itertools
 import json
 import time
 import uuid
@@ -41,7 +42,7 @@ from profile_db import (db_add_collection, db_add_inventory,
                         db_champion_reward_profile,
                         db_update_champion_xp, db_create_treasure_chest)
 from services import server_perks
-from static import tame_objective_scene
+from static import DUNGEON_PREFAB_PATHS, tame_objective_scene
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -408,6 +409,11 @@ def _ensure_quest_campaign(db, champ_id, campaign_group, quest_script=None):
         cid, inst_id, champ_id, pve_db.db_campaign_user_id(champ_id, db),
         champ_name, script_name, "QUEST", json.dumps(state), db, is_started=True)
     db.commit()
+    if any(str(obj.get("type") or "").lower() == "dungeon"
+           for obj in q["objectives"]):
+        # The dungeon may already be finished (it can be entered before its
+        # quest is granted); advance the new journal entry to match.
+        _sync_finished_dungeon_objectives(db, champ_id)
     return cid
 
 
@@ -1934,6 +1940,9 @@ def _hydrate_az1_area_scene_metadata(db, locations, champ_id=None, state=None):
     gaal_nodes = _gaal_camp_nodes(db, "AZ1")
     public_data = (((state or {}).get("PublicState") or {}).get("Data") or {})
     blockade_cleared = bool(public_data.get("blockade_cleared"))
+    dungeon_entrances = {template["entrance_scene"]: template
+                         for template in _dungeon_template_rows(db)
+                         if template["entrance_scene"]}
     for loc in locations or []:
         data = loc.get("Data") or {}
         node = data.get("node") or ""
@@ -1998,6 +2007,13 @@ def _hydrate_az1_area_scene_metadata(db, locations, champ_id=None, state=None):
             continue
         guid, name, rewards_json = scene
         upper_name = str(name or "").upper()
+        if guid in dungeon_entrances:
+            # A DungeonTemplate entrance is a map portal, never a battle: its
+            # scene has no players, and sending it as an Encounter crashed
+            # the client in EncounterScene.GetChampionTemplate (issue #31).
+            _normalize_az1_dungeon_location(
+                db, data, dungeon_entrances[guid], champ_id)
+            continue
         if "PANORAMA" in upper_name:
             # PANORAMA scenes are reusable map portals. They must remain
             # actionable after returning from the scene instead of becoming a
@@ -2173,6 +2189,54 @@ def _hydrate_az1_area_scene_metadata(db, locations, champ_id=None, state=None):
     if champ_id is not None and state is not None:
         _sync_az1_quest_gates(db, champ_id, state)
         _apply_az1_quest_markers(db, champ_id, state)
+    _guard_deckless_encounters(db, locations)
+
+
+def _normalize_az1_dungeon_location(db, data, template, champ_id=None):
+    """Present an overworld dungeon entrance as a ``Dungeon`` portal.
+
+    The client shows its Enter Dungeon panel for this type and sends
+    StartLoc, which starts the DungeonTemplate run.  A finished dungeon is
+    completed; an unfinished one stays repeatable so the player can leave
+    the entrance and come back.  A dungeon the client cannot render (see
+    ``_dungeon_plan``) is a plain, safe ``Empty`` location instead.
+    """
+    plan, reason = _dungeon_plan(db, champ_id, template)
+    if plan:
+        finished = bool(champ_id) and _dungeon_completed_for_champion(
+            db, champ_id, plan["name"])
+        data.update({
+            "type": "Dungeon", "encounter": None, "conversationId": None,
+            "completed": finished, "repeatable": not finished,
+            "autostart": False, "dungeon_template": plan["template"],
+        })
+        data.pop("dungeon_unavailable", None)
+    else:
+        data.update({
+            "type": "Empty", "encounter": None, "conversationId": None,
+            "autostart": False, "dungeon_template": template.get("guid"),
+            "dungeon_unavailable": reason,
+        })
+    return data
+
+
+def _guard_deckless_encounters(db, locations):
+    """Never send a battle location whose scene has no AI deck.
+
+    The client builds the opponent panel from the scene's players; a scene
+    without them throws in ``EncounterScene.GetChampionTemplate`` and hangs
+    the map (issues #23 and #31).  Such a location is shown as ``Empty``.
+    """
+    for loc in locations or []:
+        data = loc.get("Data") or {}
+        if str(data.get("type") or "") != "Encounter":
+            continue
+        scene = data.get("encounter")
+        runtime = (pve_db.db_encounter_scene_runtime(scene, db)
+                   if scene else None)
+        if runtime and runtime[4]:
+            continue
+        data.update({"type": "Empty", "encounter": None, "autostart": False})
 
 
 def _az1_area_scene_state(champion_race=None, rewards_json=None, db=None):
@@ -3757,6 +3821,15 @@ def advance_crayburn_step(handler, db, camp_id, won, comp, session_id,
     if (ctype or "").upper() != "DUNGEON":
         return None
     state = json.loads(state_json) if state_json else None
+    if _is_generic_dungeon(state):
+        # A DungeonTemplate run: this entry point is the battle result.
+        if state.get("Finished"):
+            return None
+        _drun_battle_end(state, won)
+        _publish_generic_dungeon(handler, db, camp_id, state,
+                                 "dungeon_battle", comp, session_id, target,
+                                 instance, conh, uid)
+        return ("dungeon", state.get("ALoc"))
     if state is None:
         champ_row = pve_db.db_campaign_identity_state(camp_id, conn=db)
         state = _build_initial_gameplay_state(
@@ -3908,6 +3981,702 @@ def advance_crayburn_step(handler, db, camp_id, won, comp, session_id,
     _launch_encounter(handler, db, camp_id, champ_id, value, deck_uid64,
                       comp, session_id, target, instance, conh, uid)
     return step
+
+
+# ---------------------------------------------------------------------------
+# Generic DungeonTemplate runner (the AZ1 dungeons besides Crayburn Castle)
+# ---------------------------------------------------------------------------
+# ``dungeon_templates`` holds every DungeonTemplate resolved into ordered
+# rooms (AssetExtraction/gamedata_seed.py): each room has a prefab node and
+# stages of prelude conversations, an optional encounter, and its Success/
+# Fail conversations.  The dungeon map prefab and its paths come from
+# ``static.DUNGEON_PREFAB_PATHS``.  A run is stored in the DUNGEON campaign's
+# state under ``DungeonRun``; every client-facing location is recomputed from
+# that run, so the protocol shape matches the Crayburn dungeon (Convo ->
+# conv_done, Encounter -> start/game end, Empty -> empty_done) without any
+# per-dungeon tables.  Crayburn Castle keeps its own seed and code path.
+
+_DUNGEON_LOCATION_DEFAULTS = {
+    "autostart": False, "autopan": False, "autotrigger": False,
+    "battle": None, "completed": False, "enabled": False, "visible": False,
+    "repeatable": False, "givequest": False, "turninquest": False,
+    "impassable": False, "unknown": False, "encounter": None,
+    "encounter_desc": None, "allow_cancel": False, "conversationId": None,
+}
+
+
+def _is_generic_dungeon(state):
+    """Whether *state* is a DungeonTemplate run (not Crayburn's chain)."""
+    return isinstance(state, dict) and isinstance(state.get("DungeonRun"), dict)
+
+
+def _dungeon_name_words(name):
+    return [word for word in re.findall(r"[a-z0-9]+", str(name or "").lower())
+            if word != "the"]
+
+
+def _dungeon_prefab_root(name):
+    """Bind a DungeonTemplate name to its client map prefab root.
+
+    Prefab folders concatenate the dungeon's words, sometimes reordered or
+    with the article (``theusurper``; ``crayburncastle`` for "Castle
+    Crayburn"), so accept any word order with or without "the".
+    """
+    words = _dungeon_name_words(name)
+    if not words or len(words) > 6:
+        return None
+    spellings = {"".join(order) for order in itertools.permutations(words)}
+    for root in sorted(DUNGEON_PREFAB_PATHS):
+        leaf = root.rsplit("/", 1)[-1]
+        if leaf in spellings or (leaf.startswith("the") and
+                                 leaf[3:] in spellings):
+            return root
+    return None
+
+
+def _dungeon_template_rows(db):
+    try:
+        rows = pve_db.db_dungeon_template_rows(db)
+    except Exception:
+        return []
+    templates = []
+    for guid, name, entrance_scene, entrance_node, rooms_json, issues_json in rows:
+        try:
+            rooms = json.loads(rooms_json or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            rooms = []
+        try:
+            issues = json.loads(issues_json or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            issues = []
+        templates.append({
+            "guid": str(guid or ""), "name": str(name or ""),
+            "entrance_scene": str(entrance_scene or ""),
+            "entrance_node": str(entrance_node or ""),
+            "rooms": rooms if isinstance(rooms, list) else [],
+            "issues": issues if isinstance(issues, list) else [],
+        })
+    return templates
+
+
+def _dungeon_template(db, guid=None, entrance_scene=None, name=None):
+    for template in _dungeon_template_rows(db):
+        if ((guid and template["guid"] == str(guid).lower()) or
+                (entrance_scene and template["entrance_scene"] and
+                 template["entrance_scene"] == str(entrance_scene).lower()) or
+                (name and template["name"] == name)):
+            return template
+    return None
+
+
+def _dungeon_plan(db, champ_id, template):
+    """Materialize a template for one champion and check it is playable.
+
+    Returns ``(plan, reason)``; ``plan`` is None when the client could not
+    render or finish the dungeon (no prefab, rooms on nodes the prefab does
+    not have, or nothing to play).  Faction variants are resolved here and
+    every encounter must have an AI deck: a deck-less scene is never sent as
+    an Encounter.
+    """
+    if not template:
+        return None, "no DungeonTemplate"
+    root = _dungeon_prefab_root(template["name"])
+    if not root:
+        return None, f"no client map prefab for {template['name']!r}"
+    edges = [(str(a), str(b)) for a, b, _path in
+             pve_db.db_template_edges(root, db)]
+    prefab_nodes = {node for edge in edges for node in edge}
+    if not edges:
+        return None, f"no seeded paths for {root}"
+    try:
+        faction = _quest_faction_for_champion(db, champ_id)
+    except Exception:
+        faction = "Ardent"
+    rooms = []
+    for room in template["rooms"]:
+        if not isinstance(room, dict) or not room.get("node"):
+            continue
+        stages = []
+        for stage in room.get("stages") or []:
+            if not isinstance(stage, dict):
+                continue
+
+            def pick(key, stage=stage):
+                value = stage.get(key)
+                if not value:
+                    value = (stage.get(key + "_by_faction") or {}).get(faction)
+                return str(value).lower() if value else None
+
+            encounter = pick("encounter")
+            runtime = (pve_db.db_encounter_scene_runtime(encounter, db)
+                       if encounter else None)
+            if encounter and not (runtime and runtime[4]):
+                encounter = None
+            preludes = [str(value).lower() for value in
+                        stage.get("preludes") or [] if value]
+            if not preludes and not encounter:
+                continue
+            stages.append({
+                "preludes": preludes,
+                "encounter": encounter,
+                "success": pick("success") if encounter else None,
+                "fail": pick("fail") if encounter else None,
+            })
+        rooms.append({"node": str(room["node"]),
+                      "title": str(room.get("title") or room["node"]),
+                      "stages": stages})
+    missing = sorted({room["node"] for room in rooms
+                      if room["stages"] and room["node"] not in prefab_nodes})
+    if missing:
+        return None, f"rooms on nodes missing from {root}: {', '.join(missing)}"
+    if not any(room["stages"] for room in rooms):
+        return None, "no playable room"
+    if not template.get("entrance_scene"):
+        return None, "no overworld entrance scene"
+    forks = sorted(node for node in prefab_nodes
+                   if node.lower().startswith("fork"))
+    return {
+        "template": template["guid"], "name": template["name"],
+        "prefab": root, "entrance_scene": template["entrance_scene"],
+        "entrance_node": template["entrance_node"],
+        "start": rooms[0]["node"], "edges": [list(edge) for edge in edges],
+        "forks": forks, "rooms": rooms,
+    }, None
+
+
+def _drun_finale(run):
+    finale = None
+    for index, room in enumerate(run.get("rooms") or []):
+        if room.get("stages"):
+            finale = index
+    return finale
+
+
+def _drun_progress(run, index):
+    progress = run.setdefault("progress", [])
+    while len(progress) <= index:
+        progress.append({"stage": 0, "step": 0, "done": False, "armed": False})
+    return progress[index]
+
+
+def _drun_unlocked(run, index):
+    """The final room opens once every other room with content is done."""
+    if index != _drun_finale(run):
+        return True
+    return all(_drun_progress(run, other)["done"]
+               for other, room in enumerate(run.get("rooms") or [])
+               if other != index and room.get("stages"))
+
+
+def _drun_active_room(run, node):
+    """The first unfinished, unlocked room at *node* (template order)."""
+    for index, room in enumerate(run.get("rooms") or []):
+        if room.get("node") != node or _drun_progress(run, index)["done"]:
+            continue
+        return index if _drun_unlocked(run, index) else None
+    return None
+
+
+def _drun_step(run, index):
+    """``("conv", guid)`` or ``("battle", scene)`` for a room's next step."""
+    room = (run.get("rooms") or [])[index]
+    progress = _drun_progress(run, index)
+    stages = room.get("stages") or []
+    if progress["done"] or progress["stage"] >= len(stages):
+        return None
+    stage = stages[progress["stage"]]
+    preludes = stage.get("preludes") or []
+    if progress["step"] < len(preludes):
+        return ("conv", preludes[progress["step"]])
+    if stage.get("encounter"):
+        return ("battle", stage["encounter"])
+    return None
+
+
+def _drun_finish_stage(run, index):
+    progress = _drun_progress(run, index)
+    progress["stage"] += 1
+    progress["step"] = 0
+    progress["armed"] = False
+    if progress["stage"] >= len(run["rooms"][index].get("stages") or []):
+        progress["done"] = True
+
+
+def _drun_finished(run):
+    finale = _drun_finale(run)
+    return finale is not None and _drun_progress(run, finale)["done"]
+
+
+def _drun_neighbors(run, node):
+    """Real map nodes connected to *node*, passing through path forks."""
+    adjacency = {}
+    for start, end in run.get("edges") or []:
+        adjacency.setdefault(start, set()).add(end)
+        adjacency.setdefault(end, set()).add(start)
+    forks = set(run.get("forks") or [])
+    found, seen, stack = set(), {node}, [node]
+    while stack:
+        for neighbor in adjacency.get(stack.pop(), ()):
+            if neighbor in seen:
+                continue
+            seen.add(neighbor)
+            if neighbor in forks:
+                stack.append(neighbor)
+            else:
+                found.add(neighbor)
+    return found
+
+
+def _drun_location(node, **fields):
+    data = dict(_DUNGEON_LOCATION_DEFAULTS)
+    data.update({"name": node, "node": node, "title": node})
+    data.update(fields)
+    return {"Data": data}
+
+
+def _drun_refresh(state):
+    """Recompute the client locations of a DungeonTemplate run."""
+    run = state["DungeonRun"]
+    rooms = run.get("rooms") or []
+    pdata = state.setdefault("PublicState", {}).setdefault("Data", {})
+    pdata["CampaignGroup"] = pdata.get("CampaignGroup") or "AREA"
+    pdata["DungeonTemplateId"] = run.get("template")
+    visited = pdata.setdefault("visited_nodes", [])
+    pdata.setdefault("visited_paths", [])
+    pending = run.get("pending") or None
+    pending_node = (rooms[pending["room"]]["node"]
+                    if pending and 0 <= int(pending.get("room", -1)) < len(rooms)
+                    else None)
+    nodes = list(dict.fromkeys(room["node"] for room in rooms))
+
+    def blocking(node):
+        if node == pending_node:
+            return True
+        index = _drun_active_room(run, node)
+        return index is not None and bool(rooms[index].get("stages"))
+
+    visible = {run.get("start")} | {node for node in visited if node in nodes}
+    for node in list(visible):
+        if node and not blocking(node):
+            visible |= _drun_neighbors(run, node)
+    locations = []
+    for node in nodes:
+        index = _drun_active_room(run, node)
+        title = next((room.get("title") for room in rooms
+                      if room["node"] == node and
+                      (index is None or room is rooms[index])), node)
+        shown = {"visible": node in visible, "enabled": node in visible,
+                 "title": title}
+        if node == pending_node:
+            locations.append(_drun_location(
+                node, type="Convo", conversationId=pending["conversation"],
+                autostart=True, **shown))
+        elif index is not None and _drun_step(run, index):
+            kind, value = _drun_step(run, index)
+            if kind == "conv":
+                locations.append(_drun_location(
+                    node, type="Convo", conversationId=value, autostart=True,
+                    **shown))
+            else:
+                locations.append(_drun_location(
+                    node, type="Encounter", encounter=value,
+                    autostart=bool(_drun_progress(run, index).get("armed")),
+                    allow_cancel=True, **shown))
+        elif index is not None and not rooms[index].get("stages"):
+            # A room without content (the Tranquil Dream hub) completes on
+            # arrival; auto-start so the client reports the arrival.
+            locations.append(_drun_location(
+                node, type="Empty", autostart=True, **shown))
+        else:
+            locations.append(_drun_location(
+                node, type="Empty", completed=True, **shown))
+    for fork in run.get("forks") or []:
+        # Path forks are connective geometry: rendered, never a destination.
+        locations.append(_drun_location(
+            fork, type="Empty", visible=True, enabled=False))
+    state["VisLocs"] = locations
+    state["LocNodes"] = (
+        [{"Name": node, "Data": {"id": node, "type": "DEFAULT"}}
+         for node in nodes] +
+        [{"Name": fork, "Data": {"id": fork, "type": "FORK"}}
+         for fork in run.get("forks") or []])
+    encounters = []
+    for room in rooms:
+        for stage in room.get("stages") or []:
+            scene = stage.get("encounter")
+            if scene and scene not in encounters:
+                encounters.append(scene)
+    state["Encounters"] = [{"Name": guid, "Data": {"encscene": guid}}
+                           for guid in encounters]
+    return state
+
+
+def _build_generic_dungeon_state(cid, champ_id, plan):
+    run = dict(plan)
+    run["progress"] = [{"stage": 0, "step": 0, "done": False, "armed": False}
+                       for _room in plan["rooms"]]
+    run["pending"] = None
+    state = {
+        "CampID": cid, "ChampID": champ_id, "TempType": "DUNGEON",
+        "PayGroups": [], "CSlide": None,
+        # The client starts the run with StartCamp; the first room is
+        # activated there, never on the initial load.
+        "ALoc": "", "VisLocs": [], "LocNodes": [], "Encounters": [],
+        "Champions": [], "CurState": "EXPLORE", "LastNode": plan["start"],
+        "PublicState": {"Data": {
+            # The AZ1 journal quests live in the AREA campaign group; the
+            # quest tracker filters by this value inside the dungeon too.
+            "CampaignGroup": "AREA",
+            "IsStarterDungeon": False,
+            "DungeonTemplateId": plan["template"],
+            "visited_nodes": [], "visited_paths": [],
+        }},
+        "DungeonTemplateId": plan["template"],
+        "DungeonRun": run,
+        "Started": None, "Finished": None, "FinishReason": None,
+        "Wins": 0, "Losses": 0, "Score": 0, "HealthAdj": 0,
+        "DungeonLifeAdj": 0, "Flags": {},
+    }
+    return _drun_refresh(state)
+
+
+def _drun_arrive(state, node):
+    """The player reached *node*: complete pass-through rooms, activate."""
+    run = state["DungeonRun"]
+    rooms = run.get("rooms") or []
+    state["LastNode"] = node
+    _note_visited(state, node)
+    while True:
+        index = _drun_active_room(run, node)
+        if index is None or rooms[index].get("stages"):
+            break
+        _drun_progress(run, index)["done"] = True
+    index = _drun_active_room(run, node)
+    pending = run.get("pending") or None
+    pending_here = bool(pending and rooms[pending["room"]]["node"] == node)
+    if pending_here or index is not None:
+        state["ALoc"] = node
+        if index is not None and (_drun_step(run, index) or ("",))[0] == "battle":
+            _drun_progress(run, index)["armed"] = True
+    else:
+        state["ALoc"] = ""
+    state["CurState"] = "EXPLORE"
+    return _drun_refresh(state)
+
+
+def _drun_start(state):
+    """StartCamp: place the player at the dungeon's first room."""
+    run = state["DungeonRun"]
+    return _drun_arrive(state, state.get("LastNode") or run.get("start"))
+
+
+def _drun_current_node(state):
+    run = state["DungeonRun"]
+    nodes = {room["node"] for room in run.get("rooms") or []}
+    for value in (state.get("ALoc"), state.get("LastNode")):
+        if value in nodes:
+            return value
+    return run.get("start")
+
+
+def _drun_startloc(state, location_name):
+    """Validate a StartLoc; returns the node entered or None if rejected."""
+    run = state["DungeonRun"]
+    _drun_refresh(state)
+    requested = next(
+        ((loc.get("Data") or {}) for loc in state.get("VisLocs", [])
+         if location_name in ((loc.get("Data") or {}).get("node"),
+                              (loc.get("Data") or {}).get("name"))), None)
+    if (not requested or not requested.get("visible") or
+            not requested.get("enabled") or
+            requested.get("node") in set(run.get("forks") or [])):
+        # A hidden, locked, or fork node is never a destination; keep the
+        # player where they are rather than starting the wrong content.
+        state["ALoc"] = ""
+        state["CurState"] = "EXPLORE"
+        _drun_refresh(state)
+        return None
+    _drun_arrive(state, requested["node"])
+    return requested["node"]
+
+
+def _drun_conv_done(state):
+    """Advance a run after ``conv_done``; returns the closed conversation."""
+    run = state["DungeonRun"]
+    rooms = run.get("rooms") or []
+    node = _drun_current_node(state)
+    pending = run.get("pending") or None
+    closed = None
+    if pending and rooms[pending["room"]]["node"] == node:
+        run["pending"] = None
+        closed = pending.get("conversation")
+        if pending.get("won"):
+            _drun_finish_stage(run, pending["room"])
+        else:
+            # A defeat dialogue leaves the battle retryable; do not reopen it
+            # immediately, the player starts it again from the map.
+            _drun_progress(run, pending["room"])["armed"] = False
+            state["ALoc"] = ""
+            state["CurState"] = "EXPLORE"
+            return _drun_refresh(state), closed
+    else:
+        index = _drun_active_room(run, node)
+        step = _drun_step(run, index) if index is not None else None
+        if not step or step[0] != "conv":
+            # Stale or duplicate acknowledgement: never infer progress.
+            state["CurState"] = "EXPLORE"
+            return _drun_refresh(state), None
+        closed = step[1]
+        progress = _drun_progress(run, index)
+        progress["step"] += 1
+        if _drun_step(run, index) is None:
+            _drun_finish_stage(run, index)
+        elif _drun_step(run, index)[0] == "battle":
+            progress["armed"] = True
+    # Continue with the next content at this node (the next prelude, the
+    # battle, or the next stage); otherwise return to the map.
+    _drun_arrive(state, node)
+    return state, closed
+
+
+def _drun_battle_end(state, won):
+    """Apply a dungeon battle result; queues its Success/Fail conversation."""
+    run = state["DungeonRun"]
+    rooms = run.get("rooms") or []
+    node = _drun_current_node(state)
+    index = _drun_active_room(run, node)
+    step = _drun_step(run, index) if index is not None else None
+    if not step or step[0] != "battle":
+        return _drun_refresh(state)
+    stage = rooms[index]["stages"][_drun_progress(run, index)["stage"]]
+    follow_up = stage.get("success") if won else stage.get("fail")
+    _drun_progress(run, index)["armed"] = False
+    if follow_up:
+        run["pending"] = {"room": index, "conversation": follow_up,
+                          "won": bool(won)}
+        state["ALoc"] = node
+        state["LastNode"] = node
+        state["CurState"] = "EXPLORE"
+        return _drun_refresh(state)
+    if won:
+        _drun_finish_stage(run, index)
+        return _drun_arrive(state, node)
+    state["ALoc"] = ""
+    state["CurState"] = "EXPLORE"
+    return _drun_refresh(state)
+
+
+def _dungeon_campaign_state(db, champ_id, template_name):
+    row = pve_db.db_latest_campaign_state(
+        champ_id, "DUNGEON", db, template_name=template_name)
+    if not row:
+        return None, None
+    try:
+        return row[0], json.loads(row[3] or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return row[0], {}
+
+
+def _dungeon_completed_for_champion(db, champ_id, template_name):
+    _cid, state = _dungeon_campaign_state(db, champ_id, template_name)
+    return bool(_is_generic_dungeon(state) and state.get("Finished") and
+                state.get("FinishReason") == "Complete")
+
+
+def _enter_generic_dungeon(db, champ_id, plan, entrance_node):
+    """Resume or create the champion's run of a DungeonTemplate."""
+    cid, state = _dungeon_campaign_state(db, champ_id, plan["name"])
+    if not (_is_generic_dungeon(state) and not state.get("Finished") and
+            state["DungeonRun"].get("template") == plan["template"]):
+        if cid is None:
+            cid = _new_camp_id(db)
+            champ = _get_champion(db, champ_id)
+            pve_db.db_create_campaign(
+                cid, _generate_inst_id(), champ_id,
+                pve_db.db_campaign_user_id(champ_id, db),
+                champ[3] if champ else "", plan["name"], "DUNGEON", "{}", db)
+        state = _build_generic_dungeon_state(cid, champ_id, plan)
+    state["DungeonRun"]["entrance_node"] = (
+        entrance_node or state["DungeonRun"].get("entrance_node"))
+    _drun_refresh(state)
+    pve_db.db_campaign_update_state(
+        cid, json.dumps(state), db, started=bool(state.get("Started")))
+    pve_db.db_campaign_set_last_campaign(champ_id, cid, db)
+    db.commit()
+    return cid, state
+
+
+def _advance_dungeon_quest_objectives(db, champ_id, run):
+    """Advance active quests whose current objective is this dungeon.
+
+    ``QuestObjectiveDungeon`` names the DungeonTemplate; objectives seeded
+    without it still resolve to the dungeon's overworld entrance scene.
+    """
+    advanced = []
+    for quest_id, raw in pve_db.db_campaign_state_rows(champ_id, "QUEST", db):
+        script = pve_db.db_campaign_template_name(quest_id, conn=db)
+        try:
+            state = json.loads(raw or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not script or state.get("Finished"):
+            continue
+        flags = state.get("Flags") or {}
+        objectives = flags.get("_quest_objectives") or []
+        try:
+            index = int(flags.get("_quest_objective_idx", 0) or 0)
+        except (TypeError, ValueError):
+            index = 0
+        if not (0 <= index < len(objectives)) or not isinstance(
+                objectives[index], dict):
+            continue
+        objective = objectives[index]
+        if str(objective.get("type") or "").lower() != "dungeon":
+            continue
+        dungeon = str(objective.get("dungeon") or "").lower()
+        if dungeon and dungeon != str(run.get("template") or "").lower():
+            continue
+        if not dungeon and str(objective.get("encounter") or "") != str(
+                run.get("entrance_scene") or ""):
+            continue
+        updated = _advance_quest_campaign(db, champ_id, script)
+        if updated:
+            advanced.append(updated)
+    return advanced
+
+
+def _sync_finished_dungeon_objectives(db, champ_id):
+    """Advance a newly granted quest whose dungeon is already finished."""
+    advanced = []
+    for cid, template_name, _started, raw in pve_db.db_dungeon_campaign_rows(
+            champ_id, db):
+        try:
+            state = json.loads(raw or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if (_is_generic_dungeon(state) and state.get("Finished") and
+                state.get("FinishReason") == "Complete"):
+            advanced.extend(_advance_dungeon_quest_objectives(
+                db, champ_id, state["DungeonRun"]))
+    return advanced
+
+
+def _leave_generic_dungeon(db, champ_id, state):
+    """Return from a dungeon to the AZ1 map at its entrance node."""
+    area_id, area_state = _activate_az1_area(db, champ_id)
+    entrance = (state.get("DungeonRun") or {}).get("entrance_node")
+    if entrance:
+        area_state["LastNode"] = entrance
+        area_state["ALoc"] = None
+        _note_visited(area_state, entrance)
+        _hydrate_az1_area_scene_metadata(
+            db, area_state.get("VisLocs", []), champ_id=champ_id,
+            state=area_state)
+        _az1_reveal_neighbors(db, area_state, entrance)
+        pve_db.db_campaign_update_state(
+            area_id, json.dumps(area_state), db, started=True)
+        db.commit()
+    return area_id, area_state
+
+
+def _publish_generic_dungeon(handler, db, camp_id, state, reason, comp,
+                             session_id, target, instance, conh, uid):
+    """Persist a run and push it; a finished run returns to the AZ1 map."""
+    champ_id = state.get("ChampID") or 0
+    run = state["DungeonRun"]
+    finished_now = _drun_finished(run) and not state.get("Finished")
+    quest_states = []
+    if finished_now:
+        state["Finished"] = _now_utc()
+        state["FinishReason"] = "Complete"
+        state["ALoc"] = ""
+        state["CurState"] = "EXPLORE"
+    _save_campaign_state(db, camp_id, state)
+    db.commit()
+    if finished_now:
+        quest_states = _advance_dungeon_quest_objectives(db, champ_id, run)
+    if handler is not None:
+        push_campupdate(handler, db, camp_id, champ_id, reason, "DUNGEON",
+                        False, state, comp, session_id, target, instance,
+                        conh, uid)
+    area = None
+    if finished_now:
+        area = _leave_generic_dungeon(db, champ_id, state)
+        if handler is not None:
+            for quest_state in quest_states:
+                push_campupdate(
+                    handler, db, quest_state.get("CampID") or 0,
+                    quest_state.get("ChampID") or champ_id, "quest_progress",
+                    "QUEST", False, quest_state, comp, session_id, target,
+                    instance, conh, uid)
+            push_campupdate(handler, db, area[0], champ_id,
+                            "dungeon_complete", "AREA", True, area[1], comp,
+                            session_id, target, instance, conh, uid)
+    return finished_now, area
+
+
+def _handle_generic_dungeon_event(handler, db, camp_id, state, event_name,
+                                  o_params, comp, session_id, reqid, target,
+                                  instance, conh, uid):
+    """sendevent for a DungeonTemplate run (conv/empty/cancel/visit)."""
+    log = getattr(handler, "_log_req", print)
+    champ_id = state.get("ChampID") or 0
+    applied = _empty_applied_updates()
+    run = state["DungeonRun"]
+    finished_now = False
+    if event_name == "conv_done":
+        state, closed = _drun_conv_done(state)
+        if closed:
+            applied = _apply_conversation_rewards(
+                handler, db, camp_id, state, closed)
+        log(f"    Dungeon {run.get('name')}: conv_done {closed} -> "
+            f"ALoc={state.get('ALoc')!r}")
+    elif event_name == "empty_done":
+        _drun_arrive(state, _drun_current_node(state))
+    elif event_name == "enc_cancel":
+        node = _drun_current_node(state)
+        index = _drun_active_room(run, node)
+        if index is not None:
+            _drun_progress(run, index)["armed"] = False
+        state["ALoc"] = ""
+        state["CurState"] = "EXPLORE"
+        _drun_refresh(state)
+    elif event_name == "visit_node":
+        node = str(o_params[0]) if o_params else ""
+        _drun_refresh(state)
+        target_data = next(
+            ((loc.get("Data") or {}) for loc in state.get("VisLocs", [])
+             if (loc.get("Data") or {}).get("node") == node), None)
+        if (target_data and target_data.get("visible") and
+                node not in set(run.get("forks") or [])):
+            state["LastNode"] = node
+            _note_visited(state, node)
+            _drun_refresh(state)
+    finished = _drun_finished(run) and not state.get("Finished")
+    if finished:
+        state["Finished"] = _now_utc()
+        state["FinishReason"] = "Complete"
+        state["ALoc"] = ""
+        finished_now = True
+    _save_campaign_state(db, camp_id, state)
+    db.commit()
+    resp = _build_input_response(camp_id, state, success=True, applied=applied)
+    ret = _send_response(handler, json.dumps(resp), comp, session_id, reqid,
+                         target, instance, conh, uid)
+    if finished_now:
+        log(f"    Dungeon {run.get('name')} complete (camp={camp_id})")
+        quest_states = _advance_dungeon_quest_objectives(db, champ_id, run)
+        area_id, area_state = _leave_generic_dungeon(db, champ_id, state)
+        for quest_state in quest_states:
+            push_campupdate(
+                handler, db, quest_state.get("CampID") or 0,
+                quest_state.get("ChampID") or champ_id, "quest_progress",
+                "QUEST", False, quest_state, comp, session_id, target,
+                instance, conh, uid)
+        push_campupdate(handler, db, area_id, champ_id, "dungeon_complete",
+                        "AREA", True, area_state, comp, session_id, target,
+                        instance, conh, uid)
+    return ret
 
 
 def _race_for_cfg(cfg):
@@ -4105,6 +4874,8 @@ def _prepare_dungeon_state(state, race_name=None):
     implementation."""
     if not state or state.get("TempType") != "DUNGEON":
         return state
+    if _is_generic_dungeon(state):
+        return _drun_refresh(state)
     # Detect stale states (pre-Crayburn-seed): no node has a conversationId.
     stale = all(
         not (l.get("Data", {}) or {}).get("conversationId")
@@ -4293,7 +5064,8 @@ def _crayburn_scene_for_node(race_name, node):
 
 def _normalize_crayburn_encounters(state, race_name):
     """Replace legacy shared scene IDs with the route-specific client IDs."""
-    if not state or race_name not in _CRAYBURN_RACE_SCENE_IDS:
+    if (not state or race_name not in _CRAYBURN_RACE_SCENE_IDS or
+            _is_generic_dungeon(state)):
         return False
     changed = False
     scene_guids = _crayburn_scene_guids(race_name)
@@ -4310,7 +5082,7 @@ def _normalize_crayburn_encounters(state, race_name):
         changed = True
     return changed
 
-def _build_camp_summary(cid, inst_id, campaign_type="PANORAMA", template_name="AZ1", champion_race=None, panorama_scene=None, panorama_node=None):
+def _build_camp_summary(cid, inst_id, campaign_type="PANORAMA", template_name="AZ1", champion_race=None, panorama_scene=None, panorama_node=None, dungeon_run=None):
     """Build a CampSummary JSON dict."""
     bundle, prefab = "", ""
     cfg = _az0_config(champion_race)
@@ -4334,6 +5106,13 @@ def _build_camp_summary(cid, inst_id, campaign_type="PANORAMA", template_name="A
         background_prefab = "campaign/azmap/azmap"
         nodes_prefab = "campaign/az01/nodes"
         campaign_template_id = "742c6fc1-77e5-4029-bf9e-4e8af387857a"
+        bundle, prefab = "", ""
+    elif dungeon_run and dungeon_run.get("prefab"):
+        # A DungeonTemplate run: its own map prefab and template (the client
+        # reads the room titles/descriptions from that DungeonTemplate).
+        background_prefab = dungeon_run["prefab"] + "/prefabs/background"
+        nodes_prefab = dungeon_run["prefab"] + "/prefabs/nodes"
+        campaign_template_id = dungeon_run.get("template") or ""
         bundle, prefab = "", ""
     else:
         # Castle Crayburn dungeon. The background/nodes prefabs are the real
@@ -4897,7 +5676,9 @@ def _handle_startcamp(handler, db, env_json, comp, session_id,
     state["Started"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     state["CurState"] = "EXPLORE"
 
-    if (ctype or "").upper() == "DUNGEON":
+    if (ctype or "").upper() == "DUNGEON" and _is_generic_dungeon(state):
+        _drun_start(state)
+    elif (ctype or "").upper() == "DUNGEON":
         state = _prepare_dungeon_state(state, _race_name_for_campaign(db, camp_id))
         # Advance the castle chain from the Entrance so the startcamp response
         # itself carries ALoc pointing at the first conversation node.  That
@@ -4941,10 +5722,18 @@ def _handle_getcampsum(handler, db, env_json, comp, session_id,
                 except (TypeError, ValueError, json.JSONDecodeError):
                     panorama_scene = None
                     panorama_node = None
+            dungeon_run = None
+            if (row[1] or "").upper() == "DUNGEON":
+                try:
+                    dungeon_state = json.loads(row[4] or "{}") or {}
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    dungeon_state = {}
+                if _is_generic_dungeon(dungeon_state):
+                    dungeon_run = dungeon_state["DungeonRun"]
             summaries.append(_build_camp_summary(
                 cid, row[0], row[1] or "DUNGEON",
                 row[2] or "Crayburn Castle", row[3], panorama_scene,
-                panorama_node))
+                panorama_node, dungeon_run=dungeon_run))
 
     return _send_response(handler, json.dumps(summaries), comp, session_id,
                           reqid, target, instance, conh, uid)
@@ -4973,6 +5762,13 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
     else:
         state = _build_initial_gameplay_state(camp_id, champ_id, ctype or "AREA")
 
+    if ((ctype or "").upper() == "DUNGEON" and _is_generic_dungeon(state) and
+            event_name in ("conv_done", "empty_done", "enc_cancel",
+                           "visit_node")):
+        return _handle_generic_dungeon_event(
+            handler, db, camp_id, state, event_name, o_params, comp,
+            session_id, reqid, target, instance, conh, uid)
+
     # Determine the AZ0 race config from the champion's race so the
     # conversation chain uses the correct NPC names/GUIDs.
     cfg = None
@@ -4996,6 +5792,7 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
             state["VisLocs"].append(loc)
 
     pending_dungeon = None
+    pending_template_dungeon = None
     pending_area = None
     pending_panorama = None
     pending_quest_spawns = []
@@ -5752,6 +6549,23 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
                 data["completed"] = False
                 data["enabled"] = True
                 break
+    elif (event_name == "start" and (ctype or "").upper() == "AREA" and
+          _area_dungeon_location(state)):
+        # The map VM sends ``start`` for an active Dungeon location (for
+        # example a save whose ALoc is still the entrance).  Enter the
+        # dungeon exactly as StartLoc does instead of looking for a battle.
+        entrance = _area_dungeon_location(state)
+        plan, reason = _dungeon_plan(db, champ_id, _dungeon_template(
+            db, guid=entrance.get("dungeon_template")))
+        state["ALoc"] = None
+        state["CurState"] = "EXPLORE"
+        if plan:
+            log(f"    Campaign dungeon transition: node={entrance.get('node')} "
+                f"dungeon={plan['name']}")
+            pending_template_dungeon = _enter_generic_dungeon(
+                db, champ_id, plan, entrance.get("node"))
+        else:
+            log(f"    Campaign dungeon unavailable: {reason}")
     elif event_name == "start":
         # The player pressed "Let's start" on the training encounter (or a
         # dungeon). Launch the battle by pushing a 'gamestarted' notification
@@ -5805,7 +6619,25 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
         push_campupdate(handler, db, panorama_id, champ_id, "area_panorama",
                         "PANORAMA", True, panorama_state, comp, session_id,
                         target, instance, conh, uid)
+    if pending_template_dungeon:
+        dungeon_id, dungeon_state = pending_template_dungeon
+        push_campupdate(handler, db, dungeon_id, champ_id, "area_dungeon",
+                        "DUNGEON", True, dungeon_state, comp, session_id,
+                        target, instance, conh, uid)
     return ret
+
+
+def _area_dungeon_location(state):
+    """The active, unfinished Dungeon portal location of an AREA state."""
+    active = state.get("ALoc")
+    if not active:
+        return None
+    for loc in state.get("VisLocs", []):
+        data = loc.get("Data") or {}
+        if (active in (data.get("node"), data.get("name")) and
+                data.get("type") == "Dungeon" and not data.get("completed")):
+            return data
+    return None
 
 
 def _mark_quest_objective_retryable(db, champion_id, scene_guid):
@@ -7692,6 +8524,7 @@ def _handle_locaction(handler, db, env_json, comp, session_id,
     location_name = env_json.get("Loc", "")
     params = env_json.get("Params", [])
     pending_panorama = None
+    pending_dungeon = None
 
     log = getattr(handler, "_log_req", print)
     action = "StartLoc" if ract == 0 else "FinishLoc"
@@ -7711,7 +8544,11 @@ def _handle_locaction(handler, db, env_json, comp, session_id,
         state = _build_initial_gameplay_state(camp_id, champ_id, ctype or "AREA")
 
     if ract == 0:
-        if (ctype or "").upper() == "DUNGEON":
+        if (ctype or "").upper() == "DUNGEON" and _is_generic_dungeon(state):
+            if _drun_startloc(state, location_name) is None:
+                log(f"    Campaign movement rejected: {location_name} is "
+                    "hidden, locked, or a path fork")
+        elif (ctype or "").upper() == "DUNGEON":
             state = _prepare_dungeon_state(
                 state, _race_name_for_campaign(db, camp_id))
             requested_node = _resolve_node(state, location_name)
@@ -7961,6 +8798,25 @@ def _handle_locaction(handler, db, env_json, comp, session_id,
                         db, champ_id, scene[0], node, state)
                     state["ALoc"] = None
                     state["CurState"] = "EXPLORE"
+                entered = next(
+                    ((loc.get("Data") or {}) for loc in state.get("VisLocs", [])
+                     if (loc.get("Data") or {}).get("node") == node), {})
+                if (not blocked_encounter and not movement_rejected and
+                        entered.get("type") == "Dungeon" and
+                        not entered.get("completed")):
+                    plan, reason = _dungeon_plan(
+                        db, champ_id, _dungeon_template(
+                            db, guid=entered.get("dungeon_template")))
+                    if plan:
+                        log(f"    Campaign dungeon transition: node={node} "
+                            f"dungeon={plan['name']}")
+                        pending_dungeon = _enter_generic_dungeon(
+                            db, champ_id, plan, node)
+                        state["ALoc"] = None
+                        state["CurState"] = "EXPLORE"
+                    else:
+                        log(f"    Campaign dungeon unavailable: node={node} "
+                            f"({reason})")
         state["CurState"] = "EXPLORE"
     else:
         state["CurState"] = "EXPLORE"
@@ -7988,6 +8844,12 @@ def _handle_locaction(handler, db, env_json, comp, session_id,
             handler, db, panorama_id, champ_id, "area_panorama",
             "PANORAMA", True, panorama_state, comp, session_id,
             target, instance, conh, uid)
+    if pending_dungeon:
+        dungeon_id, dungeon_state = pending_dungeon
+        push_campupdate(
+            handler, db, dungeon_id, champ_id, "area_dungeon",
+            "DUNGEON", True, dungeon_state, comp, session_id,
+            target, instance, conh, uid)
     return ret
 
 
@@ -8008,6 +8870,8 @@ def _handle_forfeit(handler, db, env_json, comp, session_id,
     else:
         state = _build_initial_gameplay_state(camp_id, champ_id, ctype or "AREA")
 
+    leaving_dungeon = (_is_generic_dungeon(state) and
+                       not state.get("Finished"))
     state["Finished"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     state["FinishReason"] = "Forfeit"
     state["CurState"] = "FINISHED"
@@ -8016,8 +8880,17 @@ def _handle_forfeit(handler, db, env_json, comp, session_id,
     db.commit()
 
     resp = _build_input_response(camp_id, state, success=True)
-    return _send_response(handler, json.dumps(resp), comp, session_id,
-                          reqid, target, instance, conh, uid)
+    ret = _send_response(handler, json.dumps(resp), comp, session_id,
+                         reqid, target, instance, conh, uid)
+    if leaving_dungeon:
+        # Leaving a DungeonTemplate run abandons it (the client warns that
+        # progress is lost) and returns to the AZ1 map at its entrance; the
+        # entrance stays open so the dungeon can be entered again.
+        area_id, area_state = _leave_generic_dungeon(db, champ_id, state)
+        push_campupdate(handler, db, area_id, champ_id, "dungeon_left",
+                        "AREA", True, area_state, comp, session_id, target,
+                        instance, conh, uid)
+    return ret
 
 
 def _handle_cheat(handler, db, env_json, comp, session_id,

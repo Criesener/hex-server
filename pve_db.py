@@ -931,6 +931,30 @@ def db_az1_edges(conn=None):
     ).fetchall()
 
 
+def db_template_edges(campaign_template, conn=None):
+    """Return the directed map edges seeded for one campaign/prefab template."""
+    return _connection(conn).execute(
+        "SELECT from_node, to_node, path_name FROM campaign_node_edges "
+        "WHERE campaign_template=?", (str(campaign_template),)
+    ).fetchall()
+
+
+def db_dungeon_template_rows(conn=None):
+    """Return every seeded DungeonTemplate (guid, name, entrance, rooms)."""
+    return _connection(conn).execute(
+        "SELECT guid, name, entrance_scene_guid, entrance_node, rooms_json, "
+        "issues_json FROM dungeon_templates ORDER BY name"
+    ).fetchall()
+
+
+def db_dungeon_campaign_rows(champion_id, conn=None):
+    """Return a champion's DUNGEON campaigns, newest first."""
+    return _connection(conn).execute(
+        "SELECT id, template_name, is_started, state_json FROM campaigns "
+        "WHERE champion_id=? AND campaign_type='DUNGEON' ORDER BY id DESC",
+        (champion_id,)).fetchall()
+
+
 def db_az1_edge_exists(from_node, to_node, conn=None):
     """Whether two AZ1 nodes are directly connected."""
     return bool(_connection(conn).execute(

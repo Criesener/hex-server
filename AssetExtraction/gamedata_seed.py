@@ -744,12 +744,26 @@ def _extract_encounters(data: str) -> tuple[list[tuple[Any, ...]], list[tuple[An
             if encounter_guid and encounter_guid != ZERO_GUID:
                 tamed_scene_guids.add(encounter_guid)
 
+    # DungeonTemplate rooms fight scenes named after their dungeon
+    # ("Tranquil Dream Bear Easy"); keep every scene a dungeon references or
+    # names so the generic dungeon runner can resolve each room's opponent.
+    dungeons = _dungeon_records(data)
+    dungeon_prefixes = [prefix for prefix in
+                        (_dungeon_tokens(d.get("m_Name")) for d in dungeons)
+                        if prefix]
+    dungeon_refs = set()
+    for dungeon in dungeons:
+        dungeon_refs |= _dungeon_scene_refs(dungeon)
+
     scenes = []
     deck_cards: dict[tuple[str, str], list[Any]] = {}
     for _, record in records(data, "SceneData")[0]:
         if not str(record.get("_t") or "").endswith("EncounterScene"):
             continue
         name = record.get("m_Name") or ""
+        name_tokens = _dungeon_tokens(name)
+        dungeon_scene = (nested_guid(record, "m_Id") in dungeon_refs or any(
+            name_tokens[:len(prefix)] == prefix for prefix in dungeon_prefixes))
         # Keep the AZ0 training scenes and the race-specific Crayburn tutorial
         # scenes used by campaign/FRA.  The latter carry the real encounter
         # deck-template mapping (for example Orc -> Vilefang), so omitting
@@ -758,7 +772,8 @@ def _extract_encounters(data: str) -> tuple[list[tuple[Any, ...]], list[tuple[An
                 name.startswith("AZ 1") or name.startswith("AZ 2") or
                 " Tutorial Castle Gatehouse" in name or
                 " Tutorial Tower Gatehouse" in name or
-                " Tutorial Tower of Penworth" in name):
+                " Tutorial Tower of Penworth" in name or
+                dungeon_scene):
             continue
         ai_deck = ""
         for player in record.get("m_EncounterPlayers") or []:
@@ -797,6 +812,10 @@ def _extract_encounters(data: str) -> tuple[list[tuple[Any, ...]], list[tuple[An
             rewards.update({"gold": 100, "xp": 100, "one_time": False})
         elif " TUTORIAL " in f" {name.upper()} ":
             rewards.update({"gold": 200, "xp": 200, "one_time": False})
+        elif dungeon_scene:
+            # DungeonTemplate/EncounterScene records carry no payout; use the
+            # same per-battle default as the AZ1 map encounters.
+            rewards.update({"gold": 100, "xp": 100, "one_time": False})
         if "SHROOM HAUS" in name.upper():
             rewards["card_choice"] = [
                 {"name": "Builder Bot", "guid": "85112245-7aed-4a5b-9de9-3c262f11168a"},
@@ -967,6 +986,377 @@ def extract_campaign_node_conversations(path: str | None = None) -> list[tuple[A
         if row:
             rows.append(row)
     return sorted(set(rows))
+
+
+# ---------------------------------------------------------------------------
+# DungeonTemplate rooms
+# ---------------------------------------------------------------------------
+# A DungeonTemplate lists its rooms (``m_ItemData``) with the prefab node and
+# the events fired on a visit.  The AZ1 templates are only partly authored:
+# some rooms carry no events, a few encounter links are shifted by one room,
+# and some conversation references dangle.  The conversations and encounter
+# scenes themselves follow a stable ``<Dungeon> - <Room>[ Success| Fail]``
+# naming convention, so the seed resolves each room from the authored events
+# first and fills the gaps from that convention.  The result is stored as
+# data (``dungeon_templates``); the campaign runner never names a dungeon.
+
+_DUNGEON_FACTIONS = {"ardent": "Ardent", "underworld": "Underworld"}
+
+
+def _dungeon_tokens(text: Any) -> list[str]:
+    """Comparable words: lower case, no articles, singular, no stray letters.
+
+    Digits stay: "Sister Midnight 2" is a different conversation from
+    "Sister Midnight".  A lone letter is an apostrophe split ("Shepherd's").
+    """
+    out = []
+    for token in re.findall(r"[a-z0-9]+", str(text or "").lower()):
+        if (len(token) < 2 and not token.isdigit()) or token == "the":
+            continue
+        if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+            token = token[:-1]
+        out.append(token)
+    return out
+
+
+def _dungeon_key(text: Any) -> str:
+    return " ".join(_dungeon_tokens(text))
+
+
+def _strip_tokens(tokens: list[str], prefix: list[str]) -> list[str] | None:
+    if prefix and tokens[:len(prefix)] == prefix:
+        return tokens[len(prefix):]
+    return None
+
+
+def _dungeon_records(data: str) -> list[dict[str, Any]]:
+    """DungeonTemplate records that actually define rooms."""
+    return [record for _, record in records(data, "SceneData")[0]
+            if str(record.get("_t") or "").endswith("DungeonTemplate")
+            and record.get("m_ItemData")]
+
+
+def _dungeon_scene_refs(record: dict[str, Any]) -> set[str]:
+    refs = set()
+    for item in record.get("m_ItemData") or []:
+        for event in item.get("m_EventsToFireWhenVisited") or []:
+            if str(event.get("_t") or "").endswith("UIEventBeginEncounter"):
+                scene = nested_guid(event, "m_EncounterId")
+                if scene and scene != ZERO_GUID:
+                    refs.add(scene)
+    return refs
+
+
+def _conversation_names(data: str) -> dict[str, str]:
+    """ConversationTemplate GUID -> authored name, without a YAML parse."""
+    names = {}
+    for raw in section_text(data, "ConversationTemplate"):
+        guid_match = re.search(
+            r'"m_Id"\s*:\s*\{\s*"m_Guid"\s*:\s*"([0-9a-fA-F-]+)"', raw)
+        name_match = re.search(r'"m_Name"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', raw)
+        if guid_match and name_match:
+            names[guid_match.group(1).lower()] = name_match.group(1)
+    return names
+
+
+def _encounter_scene_index(data: str) -> dict[str, dict[str, Any]]:
+    scenes = {}
+    for _, record in records(data, "SceneData")[0]:
+        if not str(record.get("_t") or "").endswith("EncounterScene"):
+            continue
+        ai_deck = ""
+        for player in record.get("m_EncounterPlayers") or []:
+            if isinstance(player, dict) and int_value(player.get("m_IsAI")):
+                deck = nested_guid(player, "m_EncounterDeck")
+                if deck and deck != ZERO_GUID:
+                    ai_deck = deck
+                    break
+        scenes[nested_guid(record, "m_Id")] = {
+            "name": str(record.get("m_Name") or ""),
+            "title": str(record.get("m_Title") or ""),
+            "ai_deck": ai_deck,
+            "boss": int_value(record.get("m_IsBossEncounter")),
+        }
+    return scenes
+
+
+def _dungeon_conversation_catalog(dungeon_name: str,
+                                  conversations: dict[str, str]) -> list[dict[str, str]]:
+    """The dungeon's ``<Dungeon> - <label>`` conversations, parsed."""
+    prefix = _dungeon_tokens(dungeon_name)
+    catalog = []
+    for conversation_guid, name in sorted(conversations.items()):
+        head, sep, label = str(name or "").partition(" - ")
+        if not sep or _dungeon_tokens(head) != prefix:
+            continue
+        parts = [part.strip() for part in label.split(" - ")]
+        faction = ""
+        if len(parts) > 1 and parts[-1].lower() in _DUNGEON_FACTIONS:
+            faction = _DUNGEON_FACTIONS[parts[-1].lower()]
+            parts = parts[:-1]
+        label = " - ".join(parts)
+        match = re.match(r"^(.*?)\s+(success|fail)\b(.*)$", label, re.I)
+        base, outcome, variant = label, "", ""
+        if match:
+            base, outcome, variant = (match.group(1), match.group(2).lower(),
+                                      match.group(3))
+        catalog.append({"guid": conversation_guid, "name": name,
+                        "base": _dungeon_key(base), "outcome": outcome,
+                        "variant": _dungeon_key(variant), "faction": faction})
+    return catalog
+
+
+def _scene_words(prefix: list[str], scene: dict[str, Any]) -> tuple[set[str], set[str]]:
+    """Distinctive (name+title, title) words of a dungeon scene."""
+    name = _dungeon_tokens(scene.get("name"))
+    label = _strip_tokens(name, prefix) or name
+    title = _dungeon_tokens(scene.get("title"))
+    stripped = _strip_tokens(title, prefix)
+    title = stripped if stripped is not None else title
+    # Every scene repeats the dungeon name; keep it so a room title that
+    # contains it ("Dream Eagle") still matches.
+    return set(label) | set(title) | set(prefix), set(title)
+
+
+def _scene_matches(prefix: list[str], scene: dict[str, Any],
+                   reference: list[str]) -> bool:
+    words, title = _scene_words(prefix, scene)
+    core = title or words
+    wanted = set(reference)
+    return bool(wanted) and (wanted <= words or bool(core and core <= wanted))
+
+
+def _scene_variant(prefix: list[str], scene: dict[str, Any],
+                   reference: list[str] = ()) -> set[str]:
+    """Variant words of a scene (difficulty, form) without its subject."""
+    _words, title = _scene_words(prefix, scene)
+    label = set(_strip_tokens(_dungeon_tokens(scene.get("name")), prefix) or [])
+    return label - title - set(reference)
+
+
+def _scene_faction(scene: dict[str, Any]) -> str:
+    found = [faction for token, faction in _DUNGEON_FACTIONS.items()
+             if token in _dungeon_tokens(scene.get("name"))]
+    return found[0] if len(found) == 1 else ""
+
+
+def resolve_dungeon_rooms(record: dict[str, Any], conversations: dict[str, str],
+                          scenes: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Resolve one DungeonTemplate into ordered, playable rooms.
+
+    Each room has ``stages``; a stage plays its ``preludes`` conversations,
+    then (optionally) its ``encounter`` with ``success``/``fail`` follow-ups.
+    Faction-specific alternatives are kept as ``*_by_faction`` maps.
+    """
+    name = str(record.get("m_Name") or "")
+    prefix = _dungeon_tokens(name)
+    convs = _dungeon_conversation_catalog(name, conversations)
+    by_guid = {item["guid"]: item for item in convs}
+    dungeon_scenes = {guid: scene for guid, scene in scenes.items()
+                      if _strip_tokens(_dungeon_tokens(scene.get("name")),
+                                       prefix) is not None}
+    issues: list[str] = []
+    rooms: list[dict[str, Any]] = []
+    claimed: set[str] = set()
+
+    def new_stage() -> dict[str, Any]:
+        return {"preludes": [], "encounter": None, "success": None, "fail": None}
+
+    # Pass 1: authored events, validated against the client catalogs.
+    for index, item in enumerate(record.get("m_ItemData") or []):
+        title = (str(item.get("m_Title") or "").strip() or
+                 re.sub(r"^\d+\s*-\s*", "", str(item.get("m_Name") or "")))
+        room = {"index": index, "name": str(item.get("m_Name") or ""),
+                "title": title, "node": str(item.get("m_MapNodeId") or ""),
+                "stages": []}
+        stage = None
+        for event in item.get("m_EventsToFireWhenVisited") or []:
+            kind = str(event.get("_t") or "")
+            if kind.endswith("UIEventBeginConversation"):
+                conversation = nested_guid(event, "m_ConversationId")
+                if conversation not in conversations:
+                    issues.append(f"{title}: unknown conversation {conversation}")
+                    continue
+                info = by_guid.get(conversation, {})
+                if stage and stage.get("encounter") and not (
+                        info and not info["outcome"] and stage.get("success")):
+                    slot = info.get("outcome") or (
+                        "fail" if stage.get("success") else "success")
+                    if stage.get(slot):
+                        issues.append(f"{title}: duplicate {slot} {conversation}")
+                    else:
+                        stage[slot] = conversation
+                    continue
+                if stage is None or stage.get("encounter"):
+                    stage = new_stage()
+                    room["stages"].append(stage)
+                stage["preludes"].append(conversation)
+            elif kind.endswith("UIEventBeginEncounter"):
+                scene = nested_guid(event, "m_EncounterId")
+                if stage is None or stage.get("encounter"):
+                    stage = new_stage()
+                    room["stages"].append(stage)
+                stage["encounter"] = scene
+                stage["_authored"] = scene
+        rooms.append(room)
+
+    def reference_of(room: dict[str, Any], stage: dict[str, Any]) -> list[str]:
+        for conversation in stage.get("preludes") or []:
+            info = by_guid.get(conversation)
+            if info and info["base"]:
+                return info["base"].split()
+        return _dungeon_tokens(room["title"])
+
+    # Pass 2: an authored encounter stays unless it names another room's
+    # opponent (several AZ1 templates are shifted by one room).
+    for room in rooms:
+        for stage in room["stages"]:
+            scene_guid = stage.get("encounter")
+            scene = scenes.get(scene_guid) if scene_guid else None
+            if scene_guid and (not scene or not scene.get("ai_deck")):
+                issues.append(f"{room['title']}: encounter {scene_guid} has no AI deck")
+                stage["encounter"] = None
+            elif scene and not _scene_matches(
+                    prefix, scene, reference_of(room, stage)) and any(
+                    other is not room and _scene_matches(
+                        prefix, scene, _dungeon_tokens(other["title"]))
+                    for other in rooms):
+                stage["encounter"] = None
+            elif scene_guid:
+                claimed.add(scene_guid)
+
+    # Pass 3: fill the gaps from the dungeon's naming convention.
+    for room in rooms:
+        if not room["stages"]:
+            reference = _dungeon_key(room["title"])
+            exact = [c for c in convs if not c["outcome"] and c["base"] == reference]
+            partial = [c for c in convs if not c["outcome"] and reference and
+                       c["base"].startswith(reference + " ")]
+            # A shortened room title ("Burial Vault") names a conversation
+            # only when one candidate qualifies, preferring the one with
+            # battle outcomes; "The Dream" -> every Dream animal is not one.
+            owners = [c for c in partial if any(
+                o["outcome"] and o["base"] == c["base"] for o in convs)]
+            pool = owners or partial
+            chosen = exact[:1] or (
+                pool[:1] if len({c["base"] for c in pool}) == 1 else [])
+            stage = new_stage()
+            stage["preludes"] = [c["guid"] for c in chosen]
+            room["stages"].append(stage)
+        for stage in room["stages"]:
+            reference = reference_of(room, stage)
+            if not stage.get("encounter"):
+                candidates = [
+                    guid for guid, scene in sorted(
+                        dungeon_scenes.items(), key=lambda kv: kv[1]["name"])
+                    if guid not in claimed and scene.get("ai_deck") and
+                    _scene_matches(prefix, scene, reference) and
+                    set(reference) <= _scene_words(prefix, scene)[0] and
+                    # A more specific room owns this scene ("The Dream" vs
+                    # "Dream Bear").
+                    not any(other is not room and
+                            len(_dungeon_tokens(other["title"])) > len(reference) and
+                            set(_dungeon_tokens(other["title"])) <=
+                            _scene_words(prefix, scene)[0]
+                            for other in rooms)]
+                if candidates:
+                    by_faction: dict[str, str] = {}
+                    for guid in candidates:
+                        faction = _scene_faction(dungeon_scenes[guid])
+                        if faction:
+                            by_faction.setdefault(faction, guid)
+                    authored = scenes.get(stage.get("_authored") or "")
+                    variant = (_scene_variant(prefix, authored)
+                               if authored else None)
+
+                    def rank(guid: str) -> tuple[Any, ...]:
+                        scene = dungeon_scenes[guid]
+                        same_variant = (variant is not None and _scene_variant(
+                            prefix, scene, reference) == variant)
+                        return (0 if same_variant else 1,
+                                0 if scene.get("title") else 1,
+                                0 if scene.get("boss") else 1, scene["name"])
+
+                    if len(by_faction) > 1:
+                        stage["encounter_by_faction"] = by_faction
+                        claimed.update(by_faction.values())
+                    else:
+                        stage["encounter"] = sorted(candidates, key=rank)[0]
+                        claimed.add(stage["encounter"])
+            if stage.get("encounter") or stage.get("encounter_by_faction"):
+                base = " ".join(reference)
+                for outcome in ("success", "fail"):
+                    if stage.get(outcome):
+                        continue
+                    found = [c for c in convs
+                             if c["outcome"] == outcome and c["base"] == base]
+                    if not found:
+                        # "Sister Midnight" continues as "Sister Midnight 2"
+                        # (its pre-battle speech and its Success/Fail pair).
+                        numbered = sorted({
+                            c["base"] for c in convs if c["outcome"] == outcome
+                            and re.fullmatch(re.escape(base) + r" \d+", c["base"])})
+                        if numbered:
+                            found = [c for c in convs if c["outcome"] == outcome
+                                     and c["base"] == numbered[0]]
+                            stage["preludes"].extend(
+                                c["guid"] for c in convs
+                                if not c["outcome"] and c["base"] == numbered[0]
+                                and c["guid"] not in stage["preludes"])
+                    if not found:
+                        continue
+                    factions = {c["faction"]: c["guid"] for c in found if c["faction"]}
+                    if len(factions) > 1:
+                        stage[outcome + "_by_faction"] = factions
+                    else:
+                        plain = [c for c in found if not c["variant"]] or found
+                        stage[outcome] = plain[0]["guid"]
+            stage.pop("_authored", None)
+        room["stages"] = [stage for stage in room["stages"]
+                          if stage["preludes"] or stage.get("encounter")
+                          or stage.get("encounter_by_faction")]
+
+    # The nodeless "Entrance" record fires when the dungeon starts: its
+    # content opens the first mapped room.
+    mapped = [room for room in rooms if room["node"]]
+    unmapped = [room for room in rooms if not room["node"]]
+    if mapped:
+        carried = [stage for room in unmapped for stage in room["stages"]]
+        mapped[0]["stages"] = carried + mapped[0]["stages"]
+    return {"rooms": mapped, "issues": issues}
+
+
+def _dungeon_entrance(dungeon_name: str,
+                      scenes: dict[str, dict[str, Any]]) -> tuple[str, str]:
+    """The ``AZ n - NODE nn - <Dungeon> - DUNGEON`` overworld entrance."""
+    wanted = _dungeon_tokens(dungeon_name)
+    pattern = re.compile(r"^AZ\s*\d+\s*-\s*NODE\s*([0-9A-Za-z]+)\s*-\s*(.+?)\s*-\s*DUNGEON\s*$",
+                         re.IGNORECASE)
+    for scene_guid, scene in sorted(scenes.items()):
+        match = pattern.match(scene.get("name") or "")
+        if not match:
+            continue
+        if wanted in (_dungeon_tokens(match.group(2)),
+                      _dungeon_tokens(scene.get("title"))):
+            return scene_guid, _campaign_node_id(match.group(1))
+    return "", ""
+
+
+def _extract_dungeon_templates(data: str) -> list[tuple[Any, ...]]:
+    conversations = _conversation_names(data)
+    scenes = _encounter_scene_index(data)
+    rows = []
+    for record in _dungeon_records(data):
+        dungeon_guid = nested_guid(record, "m_Id")
+        name = str(record.get("m_Name") or "")
+        if not dungeon_guid or not name:
+            continue
+        resolved = resolve_dungeon_rooms(record, conversations, scenes)
+        entrance_scene, entrance_node = _dungeon_entrance(name, scenes)
+        rows.append((dungeon_guid, name, entrance_scene, entrance_node,
+                     json_text(resolved["rooms"], []),
+                     json_text(resolved["issues"], [])))
+    return sorted(rows)
 
 
 def _quest_text(value: Any) -> str:
@@ -1341,7 +1731,7 @@ def _extract_pack_map(data: str) -> list[tuple[Any, ...]]:
 
 _EXTRACT_CACHE: dict[str, dict[str, Any]] = {}
 # Bump when extract() output changes so on-disk caches are rebuilt.
-_EXTRACT_VERSION = 2
+_EXTRACT_VERSION = 3
 _EXTRACT_CACHE_VERSION = 3
 
 
@@ -1403,6 +1793,7 @@ def extract(path: str | None = None) -> dict[str, Any]:
     campaign_node_conversations = _extract_campaign_node_conversations(data)
     quest_templates = _extract_quest_templates(data)
     quest_conversations = _extract_quest_conversations(data)
+    dungeon_templates = _extract_dungeon_templates(data)
 
     # The table contains one BOM namespace for cards, talents, and gems.  Keep
     # the first row for each primary-key slot, matching INSERT OR IGNORE in
@@ -1446,6 +1837,7 @@ def extract(path: str | None = None) -> dict[str, Any]:
             "campaign_node_conversations": campaign_node_conversations,
             "quest_templates": quest_templates,
             "quest_conversations": quest_conversations,
+            "dungeon_templates": dungeon_templates,
             "chest_templates": _extract_chests(data),
             "equipment_templates": _extract_equipment(data),
             "equipment_card_variants": _extract_equipment_variants(data),
@@ -1490,6 +1882,7 @@ TABLE_COLUMNS = {
     "campaign_node_conversations": ("campaign_template", "node_id", "conversation_guid", "conversation_name", "trigger_json", "priority", "enabled"),
     "quest_templates": ("script_name", "name", "title", "objectives_json", "campaign_group", "start_hook", "enabled"),
     "quest_conversations": ("quest_script", "conversation_guid", "campaign_template", "node_id", "npc", "role", "faction", "conversation_name", "start_hook", "conditions_json", "priority", "enabled"),
+    "dungeon_templates": ("guid", "name", "entrance_scene_guid", "entrance_node", "rooms_json", "issues_json"),
     "chest_templates": ("guid", "name", "set_guid", "chest_type", "spin_type", "promotional_id"),
     "equipment_templates": ("guid", "name", "set_guid", "rarity", "equipment_type", "modifiers", "description", "design_notes", "is_chest_loot", "is_live"),
     "equipment_card_variants": ("base_guid", "equipment_key", "variant_guid"),

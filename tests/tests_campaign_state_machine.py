@@ -133,9 +133,14 @@ def test_area_gameend_keeps_the_hero_on_the_encounter_node():
     db, path = cloned_db()
     try:
         area_id, state = area_state(db)
-        encounter = next(loc["Data"] for loc in state["VisLocs"]
+        # The first AZ1 "Encounter" used to be the deck-less Usurper
+        # entrance (now a Dungeon portal, issue #31).  Pick a battle that is
+        # the first location with its name, so ALoc names exactly that node.
+        names = [loc["Data"].get("name") for loc in state["VisLocs"]]
+        encounter = next(loc["Data"] for index, loc in enumerate(state["VisLocs"])
                          if loc["Data"].get("type") == "Encounter"
-                         and str(loc["Data"].get("node", "")).startswith("Node"))
+                         and str(loc["Data"].get("node", "")).startswith("Node")
+                         and names.index(loc["Data"].get("name")) == index)
         state["ALoc"] = encounter.get("name") or encounter["node"]
         state.pop("ActiveEncounterGuid", None)
         db.execute("UPDATE campaigns SET state_json=? WHERE id=?",
@@ -2115,6 +2120,373 @@ def test_warren_variant_follows_the_dryad_outcome():
         os.unlink(path)
 
 
+TRANQUIL_DREAM = "d657fcad-9dbe-4acc-bb62-2495fd4a4628"
+TRANQUIL_DREAM_ENTRANCE = "66be7540-866b-496b-bbf5-d33bdfb05ab1"
+TIPI_CONVERSATION = "1aa34077-f97a-4cdd-8bb7-3644befd8954"
+AZ1_DUNGEON_ENTRANCES = ("Node008", "Node011", "Node024", "Node040", "Node068")
+_CONVERSATION_NAMES = {}
+
+
+def _conversation_names():
+    """Every ConversationTemplate the client knows (GUID -> name)."""
+    if not _CONVERSATION_NAMES:
+        from AssetExtraction import gamedata_seed
+        if gamedata_seed.configured_path():
+            data = gamedata_seed.load_text()
+        else:
+            data = gamedata_seed.load_records_text(
+                gamedata_seed.configured_records_path())
+        _CONVERSATION_NAMES.update(gamedata_seed._conversation_names(data))
+    return _CONVERSATION_NAMES
+
+
+class _DungeonClient:
+    """Drives campaign.py through the dungeon client protocol."""
+
+    def __init__(self, db):
+        self.db = db
+        self.pushes = []
+        self.launched = []
+        self.handler = SimpleNamespace(_log_req=lambda *_args: None)
+        self._saved = {name: getattr(campaign, name) for name in (
+            "_send_response", "push_campupdate", "_launch_encounter")}
+        campaign._send_response = lambda *args, **kwargs: "response"
+        campaign.push_campupdate = lambda *args, **kwargs: \
+            self.pushes.append(args)
+        campaign._launch_encounter = lambda *args, **kwargs: \
+            self.launched.append(args[4])
+
+    def restore(self):
+        for name, value in self._saved.items():
+            setattr(campaign, name, value)
+
+    def state(self, camp_id):
+        return json.loads(self.db.execute(
+            "SELECT state_json FROM campaigns WHERE id=?",
+            (camp_id,)).fetchone()[0])
+
+    def _args(self):
+        return (0, "", 0, "ServiceCampaign", "253", 0, 0)
+
+    def startloc(self, camp_id, location):
+        campaign._handle_locaction(
+            self.handler, self.db,
+            {"CampID": camp_id, "RAct": 0, "Loc": location, "Params": []},
+            *self._args())
+        return self.state(camp_id)
+
+    def event(self, camp_id, name, params=None):
+        campaign._handle_sendevent(
+            self.handler, self.db,
+            {"CampID": camp_id, "Event": name, "OParms": params},
+            *self._args())
+        return self.state(camp_id)
+
+    def startcamp(self, camp_id):
+        campaign._handle_startcamp(
+            self.handler, self.db, {"CampID": camp_id}, *self._args())
+        return self.state(camp_id)
+
+    def battle(self, camp_id, won):
+        """Press Start on the battle panel, then finish the battle."""
+        self.event(camp_id, "start")
+        campaign._apply_gameend(self.db, camp_id, won)
+        campaign.advance_crayburn_step(
+            self.handler, self.db, camp_id, won, 0, "", "ServiceCampaign",
+            "253", 0, 0, auto_activate=False)
+        return self.state(camp_id)
+
+
+def _assert_client_contract(db, state):
+    """Every location must be renderable by the client's dungeon VM."""
+    catalog = {item["Name"]: item["Data"]["encscene"]
+               for item in state.get("Encounters") or []}
+    names = _conversation_names()
+    nodes = {item["Name"] for item in state.get("LocNodes") or []}
+    for loc in state["VisLocs"]:
+        data = loc["Data"]
+        assert data["node"] in nodes, data
+        if data["type"] == "Encounter":
+            scene = campaign.pve_db.db_encounter_scene_runtime(
+                data["encounter"], db)
+            assert scene and scene[4] and scene[5], data
+            assert catalog.get(data["encounter"]) == data["encounter"], data
+        elif data["type"] == "Convo":
+            assert data["conversationId"] in names, data
+        else:
+            assert data["type"] in ("Empty", "Dungeon"), data
+            assert not data.get("encounter"), data
+
+
+def _enter_dungeon(db, client, champion_id, node):
+    """Walk the AZ1 map to a dungeon entrance and press Enter."""
+    area_id, state = area_state(db, champion_id)
+    for loc in state["VisLocs"]:
+        data = loc["Data"]
+        if data.get("node") == node:
+            data.update({"visible": True, "enabled": True})
+            name = data["name"]
+    state.update({"LastNode": node, "ALoc": None})
+    campaign._hydrate_az1_area_scene_metadata(
+        db, state["VisLocs"], champ_id=champion_id, state=state)
+    db.execute("UPDATE campaigns SET state_json=? WHERE id=?",
+               (json.dumps(state), area_id))
+    db.commit()
+    client.startloc(area_id, name)
+    push = next(args for args in client.pushes if args[4] == "area_dungeon")
+    assert push[5] == "DUNGEON" and push[6] is True, push[4:7]
+    return area_id, push[2]
+
+
+def _walk_dungeon(db, client, camp_id, lose_first=True, limit=200):
+    """Play a run to its end; returns the conversations that were played."""
+    played = []
+    state = client.startcamp(camp_id)
+    lost_once = not lose_first
+    for _step in range(limit):
+        _assert_client_contract(db, state)
+        if state.get("Finished"):
+            return state, played
+        active = next((loc["Data"] for loc in state["VisLocs"]
+                       if loc["Data"]["node"] == state.get("ALoc")), None)
+        if active is None:
+            # Back on the map: travel to the next reachable room.
+            candidates = [loc["Data"] for loc in state["VisLocs"]
+                          if loc["Data"]["visible"] and loc["Data"]["enabled"]
+                          and not loc["Data"]["completed"]]
+            assert candidates, ("stuck", state["VisLocs"])
+            state = client.startloc(camp_id, candidates[0]["name"])
+            continue
+        if active["type"] == "Convo":
+            played.append(active["conversationId"])
+            state = client.event(camp_id, "conv_done")
+        elif active["type"] == "Encounter":
+            won = lost_once
+            lost_once = True
+            state = client.battle(camp_id, won)
+            assert client.launched[-1] == active["encounter"]
+            if not won:
+                # The fail conversation plays, then the battle is retryable.
+                fail = next(loc["Data"] for loc in state["VisLocs"]
+                            if loc["Data"]["node"] == active["node"])
+                if fail["type"] == "Convo":
+                    assert state["ALoc"] == active["node"], state["ALoc"]
+                    played.append(fail["conversationId"])
+                    state = client.event(camp_id, "conv_done")
+                retry = next(loc["Data"] for loc in state["VisLocs"]
+                             if loc["Data"]["node"] == active["node"])
+                assert retry["type"] == "Encounter", retry
+                assert retry["encounter"] == active["encounter"], retry
+                assert not retry["completed"] and not retry["autostart"], retry
+                assert state["ALoc"] == "", state["ALoc"]
+        else:
+            state = client.event(camp_id, "empty_done")
+    raise AssertionError("dungeon run did not finish")
+
+
+def test_dungeon_entrances_are_never_deckless_battles():
+    """Issue #31: AZ1 dungeon entrances have no AI deck; sending them as an
+    Encounter crashed the client in EncounterScene.GetChampionTemplate."""
+    db, path = cloned_db()
+    try:
+        _area_id, state = area_state(db)
+        locs = {loc["Data"].get("node"): loc["Data"]
+                for loc in state["VisLocs"]}
+        for node in AZ1_DUNGEON_ENTRANCES:
+            assert locs[node]["type"] in ("Dungeon", "Empty"), locs[node]
+            assert locs[node]["encounter"] is None, locs[node]
+        assert locs["Node040"]["type"] == "Dungeon", locs["Node040"]
+        assert locs["Node040"]["dungeon_template"] == TRANQUIL_DREAM
+        assert locs["Node040"]["repeatable"] is True
+        # Any other deck-less battle is guarded as well.
+        stale = [{"Data": dict(locs["Node039"], type="Encounter",
+                               encounter=TRANQUIL_DREAM_ENTRANCE)}]
+        campaign._guard_deckless_encounters(db, stale)
+        assert stale[0]["Data"]["type"] == "Empty", stale
+        assert stale[0]["Data"]["encounter"] is None, stale
+        for loc in state["VisLocs"]:
+            data = loc["Data"]
+            if data.get("type") == "Encounter":
+                scene = campaign.pve_db.db_encounter_scene_runtime(
+                    data.get("encounter"), db)
+                assert scene and scene[4], data
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def test_tranquil_dream_entrance_starts_its_dungeon():
+    db, path = cloned_db()
+    client = _DungeonClient(db)
+    try:
+        area_id, camp_id = _enter_dungeon(db, client, 6, "Node040")
+        row = db.execute(
+            "SELECT campaign_type, template_name FROM campaigns WHERE id=?",
+            (camp_id,)).fetchone()
+        assert row == ("DUNGEON", "The Tranquil Dream"), row
+        assert client.state(area_id)["ALoc"] is None
+        summary_row = campaign.pve_db.db_campaign_summary_row(camp_id, db)
+        state = json.loads(summary_row[4])
+        summary = campaign._build_camp_summary(
+            camp_id, 0, "DUNGEON", "The Tranquil Dream", 3,
+            dungeon_run=state["DungeonRun"])
+        assert summary["TypeInfo"]["NodesPrefab"] == \
+            "campaign/az01/tranquildream/prefabs/nodes"
+        assert summary["TypeInfo"]["BackgroundPrefab"] == \
+            "campaign/az01/tranquildream/prefabs/background"
+        assert summary["TypeInfo"]["CampaignTemplateId"] == TRANQUIL_DREAM
+        assert state["Started"] is None and state["ALoc"] == ""
+        rooms = {room["title"]: room for room in state["DungeonRun"]["rooms"]}
+        for title in ("Dream Turtle", "Dream Bear", "Dream Eagle",
+                      "Dream Skarn", "Dream Spider"):
+            stage = rooms[title]["stages"][0]
+            assert stage["preludes"] and stage["encounter"], (title, stage)
+            assert stage["success"] and stage["fail"], (title, stage)
+        boss = rooms["Sister Midnight"]["stages"][0]
+        assert campaign.pve_db.db_encounter_scene_runtime(
+            boss["encounter"], db)[2] == "Sister Midnight", boss
+        state = client.startcamp(camp_id)
+        assert state["ALoc"] == "NodeA", state["ALoc"]
+        tipi = next(loc["Data"] for loc in state["VisLocs"]
+                    if loc["Data"]["node"] == "NodeA")
+        assert tipi["type"] == "Convo", tipi
+        assert tipi["conversationId"] == TIPI_CONVERSATION, tipi
+        hidden = {loc["Data"]["node"] for loc in state["VisLocs"]
+                  if not loc["Data"]["visible"]}
+        assert {"NodeB", "NodeG"} <= hidden, hidden
+        _assert_client_contract(db, state)
+        # Reconnecting keeps the active run.
+        assert campaign._get_existing_campaign_for_champion(
+            db, 6, "DUNGEON")[0] == camp_id
+    finally:
+        client.restore()
+        db.close()
+        os.unlink(path)
+
+
+def test_tranquil_dream_run_completes_its_quest_objective():
+    db, path = cloned_db()
+    client = _DungeonClient(db)
+    try:
+        campaign._ensure_quest_campaign(db, 6, "AREA", "q_tranquil_dream")
+        area_id, camp_id = _enter_dungeon(db, client, 6, "Node040")
+        state, played = _walk_dungeon(db, client, camp_id)
+        assert state["FinishReason"] == "Complete", state
+        names = _conversation_names()
+        played_names = [names[guid] for guid in played]
+        assert played_names[0] == "Tranquil Dream - Wigwam", played_names
+        for animal in ("Turtle", "Bear", "Eagle", "Skarn", "Spider"):
+            assert (f"Tranquil Dream - The Dream {animal} Success"
+                    in played_names), (animal, played_names)
+        assert any(name.endswith(" Fail") for name in played_names)
+        assert played_names[-1] == \
+            "Tranquil Dream - Sister Midnight 2 Success", played_names
+        quest_id, quest = campaign._quest_state_row(db, 6, "q_tranquil_dream")
+        assert quest["Flags"]["_quest_objective_idx"] == 1, quest["Flags"]
+        assert any(args[4] == "quest_progress" and args[2] == quest_id
+                   for args in client.pushes)
+        back = next(args for args in client.pushes
+                    if args[4] == "dungeon_complete")
+        assert back[5] == "AREA" and back[6] is True and back[2] == area_id
+        area = client.state(area_id)
+        entrance = next(loc["Data"] for loc in area["VisLocs"]
+                        if loc["Data"]["node"] == "Node040")
+        assert entrance["type"] == "Dungeon" and entrance["completed"]
+        assert area["LastNode"] == "Node040"
+        assert campaign.pve_db.db_champion_last_campaign_id(6, db) == area_id
+    finally:
+        client.restore()
+        db.close()
+        os.unlink(path)
+
+
+def test_az1_dungeons_play_through_the_generic_runner():
+    """Every AZ1 dungeon the client can render runs end to end."""
+    db, path = cloned_db()
+    client = _DungeonClient(db)
+    try:
+        finished, unavailable = [], {}
+        _area_id, state = area_state(db)
+        locs = {loc["Data"].get("node"): loc["Data"]
+                for loc in state["VisLocs"]}
+        for node in AZ1_DUNGEON_ENTRANCES:
+            if locs[node]["type"] != "Dungeon":
+                unavailable[node] = locs[node].get("dungeon_unavailable")
+                continue
+            client.pushes.clear()
+            _area, camp_id = _enter_dungeon(db, client, 6, node)
+            run, _played = _walk_dungeon(db, client, camp_id,
+                                         lose_first=False)
+            assert run["FinishReason"] == "Complete", node
+            finished.append(run["DungeonRun"]["name"])
+        assert {"The Tranquil Dream", "The Usurper", "The Smoldering Dead",
+                "Devonshire Keep"} <= set(finished), finished
+        # Fort Romor's template names nodes its client prefab does not have.
+        assert "Node011" in unavailable, unavailable
+        assert "missing from campaign/az01/fortromor" in \
+            unavailable["Node011"], unavailable
+    finally:
+        client.restore()
+        db.close()
+        os.unlink(path)
+
+
+def test_start_event_on_a_dungeon_entrance_enters_it():
+    """A save whose ALoc is still the entrance makes the map VM send
+    ``start`` for the Dungeon location; that must enter the dungeon."""
+    db, path = cloned_db()
+    client = _DungeonClient(db)
+    try:
+        area_id, state = area_state(db, 6)
+        for loc in state["VisLocs"]:
+            if loc["Data"].get("node") == "Node040":
+                loc["Data"].update({"visible": True, "enabled": True})
+                name = loc["Data"]["name"]
+        state.update({"LastNode": "Node040", "ALoc": name})
+        campaign._hydrate_az1_area_scene_metadata(
+            db, state["VisLocs"], champ_id=6, state=state)
+        db.execute("UPDATE campaigns SET state_json=? WHERE id=?",
+                   (json.dumps(state), area_id))
+        db.commit()
+        client.event(area_id, "start")
+        assert client.launched == [], client.launched
+        push = next(args for args in client.pushes
+                    if args[4] == "area_dungeon")
+        assert push[5] == "DUNGEON" and push[6] is True
+        assert client.state(area_id)["ALoc"] is None
+    finally:
+        client.restore()
+        db.close()
+        os.unlink(path)
+
+
+def test_leaving_a_dungeon_returns_to_its_entrance():
+    db, path = cloned_db()
+    client = _DungeonClient(db)
+    try:
+        area_id, camp_id = _enter_dungeon(db, client, 6, "Node040")
+        client.startcamp(camp_id)
+        client.pushes.clear()
+        campaign._handle_forfeit(client.handler, db, {"CampID": camp_id},
+                                 *client._args())
+        back = next(args for args in client.pushes
+                    if args[4] == "dungeon_left")
+        assert back[2] == area_id and back[5] == "AREA" and back[6] is True
+        entrance = next(loc["Data"] for loc in client.state(area_id)["VisLocs"]
+                        if loc["Data"]["node"] == "Node040")
+        assert entrance["type"] == "Dungeon", entrance
+        assert not entrance["completed"] and entrance["repeatable"], entrance
+        # Entering again starts a fresh run in the same campaign row.
+        client.pushes.clear()
+        _area, again = _enter_dungeon(db, client, 6, "Node040")
+        assert again == camp_id
+        assert client.state(camp_id)["Finished"] is None
+    finally:
+        client.restore()
+        db.close()
+        os.unlink(path)
+
+
 if __name__ == "__main__":
     tests = [
         test_cross_zila_objective_is_linked_to_savage_lord,
@@ -2163,6 +2535,12 @@ if __name__ == "__main__":
         test_finished_cross_zodiac_keeps_the_west_bridge_open,
         test_wallace_follows_the_story_order_on_revisits,
         test_warren_variant_follows_the_dryad_outcome,
+        test_dungeon_entrances_are_never_deckless_battles,
+        test_tranquil_dream_entrance_starts_its_dungeon,
+        test_tranquil_dream_run_completes_its_quest_objective,
+        test_az1_dungeons_play_through_the_generic_runner,
+        test_start_event_on_a_dungeon_entrance_enters_it,
+        test_leaving_a_dungeon_returns_to_its_entrance,
     ]
     for test in tests:
         test()

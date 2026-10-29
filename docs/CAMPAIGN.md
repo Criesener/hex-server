@@ -227,6 +227,67 @@ can queue race-specific defeat conversations. Completing the final castle
 objective advances the linked Crayburn quest and exposes the report-success NPC
 in the panorama.
 
+### AZ1 DungeonTemplate dungeons
+
+The other AZ1 dungeons use one generic runner that is driven by data.
+Crayburn keeps its own seed and code path.
+
+**Seed (`dungeon_templates`).** `AssetExtraction/gamedata_seed.py` resolves
+every `DungeonTemplate` into ordered rooms. Each room has its map node and a
+list of stages. A stage holds prelude conversations, an optional encounter,
+and that encounter's Success and Fail conversations. The resolver first uses
+the authored `m_EventsToFireWhenVisited`. Where those events are missing,
+dangling, or shifted to the wrong room, it falls back to the client naming
+convention: `<Dungeon> - <Room>[ Success| Fail][ - <Faction>]` for
+conversations and `<Dungeon> <Room> …` for encounter scenes. Faction variants
+are kept as `*_by_faction`. The seed also includes the scenes and decks that a
+dungeon names or references. Dungeon scenes pay the AZ1 default of 100 gold
+and 100 XP, because the records contain no reward data.
+
+**Map.** The node paths come from the client prefab
+`<root>/prefabs/nodes`, stored in `static.DUNGEON_PREFAB_PATHS` and seeded
+into `campaign_node_edges` under the prefab root. Run
+`AssetExtraction/extract_dungeon_prefabs.py` to regenerate them. A template is
+bound to its prefab by name, in any word order and with or without "the".
+
+**Entrance.** The overworld scene `AZ 1 - NODE nn - <Dungeon> - DUNGEON`
+has no players. It is sent as a `Dungeon` portal with no encounter, and it
+stays repeatable until the dungeon is finished. The client enters the dungeon
+through StartLoc, or through `start` while the portal is the active location.
+Both create or resume the champion's `DUNGEON` row, named after the template,
+and push a `cmpupdate` transition. If the client cannot render a dungeon,
+for example because its rooms are on nodes the prefab lacks (Fort Romor), the
+entrance is a safe `Empty` location instead. AREA hydration never sends an
+`Encounter` whose scene has no AI deck.
+
+**Run.** The run lives in the state under `DungeonRun`. The client locations
+are recomputed from it on every response:
+
+| Room position | Location sent |
+|---|---|
+| prelude conversation, or a queued Success/Fail conversation | `Convo` (auto-start), ends with `conv_done` |
+| battle | `Encounter`, can be cancelled; `start` launches it |
+| room without content | `Empty` (auto-start), completes on arrival |
+| done, or the locked final room | completed `Empty` |
+
+A node is visible when it is the start node, when it has been visited, or when
+it is next to a visited node that has no unfinished content. Path forks
+connect nodes but are never destinations. The final room, which is the last
+room with content, opens only after every other room is done. Rooms that share
+a node play in template order, so the Tranquil Dream hub comes before Sister
+Midnight.
+
+- **Won battle:** plays the Success conversation, then moves to the next stage.
+- **Lost battle:** plays the Fail conversation, then leaves the battle
+  retryable.
+- **Finished final room:** advances the active `QuestObjectiveDungeon`, which
+  is matched by template GUID or entrance scene, and returns to the AZ1 map at
+  the entrance. The entrance is then shown as completed.
+- **Leaving the dungeon** (forfeit) abandons the run and also returns to the
+  entrance. Entering again starts a fresh run.
+- **Quest granted after the dungeon is finished:** the new quest advances to
+  match.
+
 ## QUEST
 
 `QuestTemplate.jsonl` contains 33 physical lines, but the first is a section
