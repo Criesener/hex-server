@@ -4738,6 +4738,7 @@ def _dungeon_plan(db, champ_id, template):
         rooms.append({"node": str(room["node"]),
                       "title": str(room.get("title") or room["node"]),
                       "stages": stages})
+    rooms = _dungeon_rooms_on_prefab(rooms, prefab_nodes)
     missing = sorted({room["node"] for room in rooms
                       if room["stages"] and room["node"] not in prefab_nodes})
     if missing:
@@ -4747,15 +4748,73 @@ def _dungeon_plan(db, champ_id, template):
     if not template.get("entrance_scene"):
         return None, "no overworld entrance scene"
     _apply_dungeon_choice_variants(db, template["name"], rooms)
+    # Path forks and prefab nodes no room stands on (Fort Romor's Node6-8
+    # waypoints) are connective geometry: rendered, passed through.
+    occupied = {room["node"] for room in rooms}
     forks = sorted(node for node in prefab_nodes
-                   if node.lower().startswith("fork"))
+                   if node.lower().startswith("fork") or node not in occupied)
     return {
         "template": template["guid"], "name": template["name"],
         "prefab": root, "entrance_scene": template["entrance_scene"],
         "entrance_node": template["entrance_node"],
         "start": rooms[0]["node"], "edges": [list(edge) for edge in edges],
         "forks": forks, "rooms": rooms,
+        "lives": _dungeon_lives(db, champ_id),
     }, None
+
+
+_PREFAB_ROOM_NODE = re.compile(r"Node[A-Z]$")
+_PREFAB_ENTRY_NODE = re.compile(r"Node0\d*$")
+
+
+def _dungeon_rooms_on_prefab(rooms, prefab_nodes):
+    """Place the template rooms whose node the client prefab lacks.
+
+    Fort Romor's template names its rooms (Entrance, Stables, Barracks,
+    CmdPost, Defense) while its prefab has Node001 and NodeA-NodeE: a room
+    with content takes the prefab's unused lettered nodes in template order
+    (Stables NodeB, Barracks NodeC, Command Post NodeD, Defense NodeE, as the
+    gate's description places them), a room without content (the entrance)
+    the unused numbered entry node.  A content-less room that cannot be
+    placed is dropped; one with content keeps its node and makes the plan
+    fail.
+    """
+    used = {room["node"] for room in rooms if room["node"] in prefab_nodes}
+    letters = sorted(node for node in prefab_nodes
+                     if _PREFAB_ROOM_NODE.match(node) and node not in used)
+    entries = sorted(node for node in prefab_nodes
+                     if _PREFAB_ENTRY_NODE.match(node) and node not in used)
+    placed = []
+    for room in rooms:
+        if room["node"] not in prefab_nodes:
+            pool = letters if room["stages"] else entries
+            if pool:
+                room["template_node"] = room["node"]
+                room["node"] = pool.pop(0)
+            elif not room["stages"]:
+                continue
+        placed.append(room)
+    return placed
+
+
+def _dungeon_lives(db, champ_id):
+    """Dungeon lives of a champion: the base plus its talents' modifiers."""
+    rules = _dungeon_choices("_lives")
+    try:
+        lives = int(rules.get("base", 3))
+    except (TypeError, ValueError):
+        lives = 3
+    modifiers = rules.get("talent_modifiers") or {}
+    try:
+        talents = json.loads(pve_db.db_champion_talents(champ_id, db) or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        talents = []
+    for talent in talents if isinstance(talents, list) else []:
+        try:
+            lives += int(modifiers.get(str(talent).lower(), 0) or 0)
+        except (TypeError, ValueError):
+            continue
+    return max(1, lives)
 
 
 _DUNGEON_CHOICES_PATH = Path(__file__).resolve().parent / "dungeon_choices.json"
@@ -4784,13 +4843,25 @@ def _scene_variant_guid(db, scene_guid, variant):
     return None
 
 
-def _apply_dungeon_choice_variants(db, template_name, rooms):
-    """Attach the answer-driven battle variants to a dungeon plan.
+def _dungeon_scene_by_name(db, name):
+    guid = pve_db.db_encounter_scene_guid_by_name(str(name or ""), db)
+    if guid and _scene_has_ai_deck(pve_db.db_encounter_scene_runtime(guid, db)):
+        return guid
+    return None
 
-    A room battle gets ``encounter_by_points`` (its conversation's answer
+
+_DUNGEON_CHOICE_ACTIONS = ("fight", "skip", "leave")
+
+
+def _apply_dungeon_choice_variants(db, template_name, rooms):
+    """Attach the dungeon_choices.json rules to a dungeon plan.
+
+    A room battle gets ``encounter_by_rank`` (the battle's rank in the run
     picks Easy/Medium/Hard); the finale gets ``encounter_by_total`` (the
-    run's point total picks Sister Midnight's form).  The authored
-    ``encounter`` stays the fallback when no answer was recorded.
+    run's answer total picks Sister Midnight's form).  Per-room rules add
+    ``requires``/``optional`` to a room and ``on`` (conversation event ->
+    fight/skip/leave/another battle) and ``encounter_by_cleared`` to its
+    battle stage.  The authored ``encounter`` stays the fallback.
     """
     rules = _dungeon_choices(template_name)
     if not rules:
@@ -4811,18 +4882,81 @@ def _apply_dungeon_choice_variants(db, template_name, rooms):
                         bands.append([int(bound), guid])
                 if bands:
                     stage["encounter_by_total"] = bands
-            elif rules.get("difficulty_by_points"):
-                variants = {}
-                for points, variant in rules["difficulty_by_points"].items():
-                    guid = _scene_variant_guid(db, scene, variant)
+            elif index != finale and rules.get("difficulty_by_rank"):
+                by_rank = [_scene_variant_guid(db, scene, variant) or scene
+                           for variant in rules["difficulty_by_rank"]]
+                if any(guid != scene for guid in by_rank):
+                    stage["encounter_by_rank"] = by_rank
+    by_title = {}
+    for index, room in enumerate(rooms):
+        by_title.setdefault(room.get("title"), []).append(index)
+
+    def indices(titles):
+        return sorted({index for title in titles or []
+                       for index in by_title.get(title, [])})
+
+    for title, room_rules in (rules.get("rooms") or {}).items():
+        if not isinstance(room_rules, dict):
+            continue
+        for index in by_title.get(title, []):
+            room = rooms[index]
+            if room_rules.get("optional"):
+                room["optional"] = True
+            for mode in ("any", "all"):
+                needed = indices(room_rules.get("requires_" + mode))
+                if needed:
+                    room["requires"] = {"mode": mode, "rooms": needed}
+            stage = next((stage for stage in room.get("stages") or []
+                          if stage.get("encounter")), None)
+            if stage is None:
+                continue
+            choices = {}
+            for event, outcome in (room_rules.get("on") or {}).items():
+                if isinstance(outcome, dict):
+                    guid = _dungeon_scene_by_name(db, outcome.get("scene"))
                     if guid:
-                        variants[str(points)] = guid
-                if variants:
-                    stage["encounter_by_points"] = variants
+                        choices[str(event)] = {"action": "fight",
+                                               "encounter": guid}
+                elif outcome in _DUNGEON_CHOICE_ACTIONS:
+                    choices[str(event)] = {"action": outcome}
+            if choices:
+                stage["on"] = choices
+            by_cleared = []
+            for needed, scene_name in room_rules.get("encounter_by_cleared") or []:
+                guid = _dungeon_scene_by_name(db, scene_name)
+                if guid and indices(needed):
+                    by_cleared.append([indices(needed), guid])
+            if by_cleared:
+                stage["encounter_by_cleared"] = by_cleared
+
+
+def _dungeon_choice_events(template_name):
+    """Every conversation event the dungeon's rules react to."""
+    rules = _dungeon_choices(template_name)
+    events = set(rules.get("answer_events") or {})
+    for room_rules in (rules.get("rooms") or {}).values():
+        if isinstance(room_rules, dict):
+            events |= set(room_rules.get("on") or {})
+    return events
+
+
+def _drun_choice(run, index, stage):
+    """The outcome of the dialogue choice recorded for a room's battle."""
+    event = (run.get("choices") or {}).get(str(index))
+    return (stage.get("on") or {}).get(event) if event else None
+
+
+def _drun_room_done(run, index):
+    return _drun_progress(run, index)["done"]
 
 
 def _drun_stage_encounter(run, index, stage):
-    """The battle scene a stage plays, given the run's recorded answers."""
+    """The battle scene a stage plays, given the run so far.
+
+    In order: the finale form from the answers' total, the battle picked
+    by a dialogue choice, the battle by the rooms already cleared, and the
+    battle by its rank in the run (1 + the ranked rooms already cleared).
+    """
     points = run.get("answer_points") or {}
     by_total = stage.get("encounter_by_total")
     if by_total and points:
@@ -4831,6 +4965,22 @@ def _drun_stage_encounter(run, index, stage):
             if total <= int(bound):
                 return guid
         return by_total[-1][1]
+    chosen = _drun_choice(run, index, stage)
+    if chosen and chosen.get("encounter"):
+        return chosen["encounter"]
+    for needed, guid in stage.get("encounter_by_cleared") or []:
+        if all(_drun_room_done(run, other) for other in needed):
+            return guid
+    by_rank = stage.get("encounter_by_rank")
+    if by_rank:
+        rooms = run.get("rooms") or []
+        rank = 1 + sum(
+            1 for other, room in enumerate(rooms)
+            if other != index and _drun_room_done(run, other) and any(
+                other_stage.get("encounter_by_rank")
+                for other_stage in room.get("stages") or []))
+        return by_rank[min(rank, len(by_rank)) - 1]
+    # Runs planned before difficulty_by_rank kept the answer's variant.
     by_points = stage.get("encounter_by_points") or {}
     chosen = by_points.get(str(points.get(str(index), "")))
     return chosen or stage.get("encounter")
@@ -4840,7 +4990,11 @@ def _drun_stage_scenes(stage):
     """Every scene a stage may play (catalog and reward lookups)."""
     scenes = [stage.get("encounter")]
     scenes += list((stage.get("encounter_by_points") or {}).values())
+    scenes += list(stage.get("encounter_by_rank") or [])
     scenes += [guid for _bound, guid in stage.get("encounter_by_total") or []]
+    scenes += [guid for _needed, guid in stage.get("encounter_by_cleared") or []]
+    scenes += [choice.get("encounter")
+               for choice in (stage.get("on") or {}).values()]
     return [scene for scene in dict.fromkeys(scenes) if scene]
 
 
@@ -4860,12 +5014,24 @@ def _drun_progress(run, index):
 
 
 def _drun_unlocked(run, index):
-    """The final room opens once every other room with content is done."""
+    """Whether a room is open.
+
+    A room with ``requires`` opens once any/all of the named rooms are done;
+    the final room opens once every other room with content is done,
+    ``optional`` rooms (alternatives, rooms that may be left alone) aside.
+    """
+    rooms = run.get("rooms") or []
+    requires = rooms[index].get("requires") if 0 <= index < len(rooms) else None
+    if isinstance(requires, dict) and requires.get("rooms"):
+        done = [_drun_room_done(run, other) for other in requires["rooms"]]
+        if not (any(done) if requires.get("mode") == "any" else all(done)):
+            return False
     if index != _drun_finale(run):
         return True
     return all(_drun_progress(run, other)["done"]
-               for other, room in enumerate(run.get("rooms") or [])
-               if other != index and room.get("stages"))
+               for other, room in enumerate(rooms)
+               if other != index and room.get("stages")
+               and not room.get("optional"))
 
 
 def _drun_active_room(run, node):
@@ -4895,6 +5061,7 @@ def _drun_step(run, index):
 
 def _drun_finish_stage(run, index):
     progress = _drun_progress(run, index)
+    (run.get("choices") or {}).pop(str(index), None)
     progress["stage"] += 1
     progress["step"] = 0
     progress["armed"] = False
@@ -5008,7 +5175,24 @@ def _drun_refresh(state):
                     encounters.append(scene)
     state["Encounters"] = [{"Name": guid, "Data": {"encscene": guid}}
                            for guid in encounters]
+    state["Losses"] = int(run.get("losses", state.get("Losses", 0)) or 0)
+    if run.get("lost") and not pending:
+        # The last dungeon life is gone: the client shows its Dungeon Lost
+        # window for CurState LOSE (no active location) and forfeits the run.
+        state["ALoc"] = ""
+        state["CurState"] = "LOSE"
     return state
+
+
+def _drun_lives_left(state):
+    """Dungeon lives left in a run (GameplayState.DungeonLifeAdj adds)."""
+    run = state.get("DungeonRun") or {}
+    try:
+        lives = int(run.get("lives", 3) or 3) + int(
+            state.get("DungeonLifeAdj", 0) or 0)
+    except (TypeError, ValueError):
+        lives = 3
+    return lives - int(run.get("losses", 0) or 0)
 
 
 def _build_generic_dungeon_state(cid, champ_id, plan):
@@ -5083,6 +5267,8 @@ def _drun_startloc(state, location_name):
     """Validate a StartLoc; returns the node entered or None if rejected."""
     run = state["DungeonRun"]
     _drun_refresh(state)
+    if run.get("lost"):
+        return None
     requested = next(
         ((loc.get("Data") or {}) for loc in state.get("VisLocs", [])
          if location_name in ((loc.get("Data") or {}).get("node"),
@@ -5137,9 +5323,24 @@ def _drun_conv_done(state):
         closed = step[1]
         progress = _drun_progress(run, index)
         progress["step"] += 1
-        if _drun_step(run, index) is None:
+        upcoming = _drun_step(run, index)
+        stage = rooms[index]["stages"][progress["stage"]]
+        choice = (_drun_choice(run, index, stage)
+                  if upcoming and upcoming[0] == "battle" else None)
+        action = (choice or {}).get("action")
+        if action == "leave":
+            # Left alone ("Leave the room."): nothing happens, the room
+            # stays to be done and its talk plays again on the next visit.
+            run["choices"].pop(str(index), None)
+            progress["step"] = 0
+            progress["armed"] = False
+            state["ALoc"] = ""
+            state["CurState"] = "EXPLORE"
+            return _drun_refresh(state), closed
+        if upcoming is None or action == "skip":
+            # No battle (or avoided in the dialogue): the stage is done.
             _drun_finish_stage(run, index)
-        elif _drun_step(run, index)[0] == "battle":
+        elif upcoming[0] == "battle":
             progress["armed"] = True
     # Continue with the next content at this node (the next prelude, the
     # battle, or the next stage); otherwise return to the map.
@@ -5159,6 +5360,11 @@ def _drun_battle_end(state, won):
     stage = rooms[index]["stages"][_drun_progress(run, index)["stage"]]
     follow_up = stage.get("success") if won else stage.get("fail")
     _drun_progress(run, index)["armed"] = False
+    if not won:
+        # A lost battle costs a dungeon life; the last one ends the run.
+        run["losses"] = int(run.get("losses", 0) or 0) + 1
+        if _drun_lives_left(state) <= 0:
+            run["lost"] = True
     if follow_up:
         run["pending"] = {"room": index, "conversation": follow_up,
                           "won": bool(won),
@@ -5205,7 +5411,8 @@ def _enter_generic_dungeon(db, champ_id, plan, entrance_node):
                 cid, _generate_inst_id(), champ_id,
                 pve_db.db_campaign_user_id(champ_id, db),
                 champ[3] if champ else "", plan["name"], "DUNGEON", "{}", db)
-        state = _build_generic_dungeon_state(cid, champ_id, plan)
+        state = _carry_dungeon_claims(
+            state, _build_generic_dungeon_state(cid, champ_id, plan))
     state["DungeonRun"]["entrance_node"] = (
         entrance_node or state["DungeonRun"].get("entrance_node"))
     _drun_refresh(state)
@@ -5214,6 +5421,39 @@ def _enter_generic_dungeon(db, champ_id, plan, entrance_node):
     pve_db.db_campaign_set_last_campaign(champ_id, cid, db)
     db.commit()
     return cid, state
+
+
+def _carry_dungeon_claims(old_state, state):
+    """Keep a champion's first-win item claims when a new run starts.
+
+    Dungeon items are claimed once per champion (``dungeon:`` keys, see
+    ``_dungeon_run_reward_records``); the run's campaign row is reused, so
+    the claims move from the finished run to the new one.  A run completed
+    before the claims existed already paid its finale's pack.
+    """
+    if not isinstance(old_state, dict):
+        return state
+    old_claims = old_state.get("_encounter_reward_claims") or {}
+    claims = {key: value for key, value in old_claims.items()
+              if str(key).startswith("dungeon:")} if isinstance(
+                  old_claims, dict) else {}
+    run = state["DungeonRun"]
+    old_run = old_state.get("DungeonRun") or {}
+    completed = int(old_run.get("completed_runs", 0) or 0)
+    if (_is_generic_dungeon(old_state) and old_state.get("Finished") and
+            old_state.get("FinishReason") == "Complete"):
+        completed += 1
+        if not any(str(key).startswith(f"dungeon:{run.get('template')}:")
+                   for key in claims):
+            finale = _drun_finale(run)
+            if finale is not None:
+                for stage_index, _stage in enumerate(
+                        run["rooms"][finale].get("stages") or []):
+                    claims[_dungeon_claim_key(run, finale, stage_index)] = True
+    run["completed_runs"] = completed
+    if claims:
+        state["_encounter_reward_claims"] = claims
+    return state
 
 
 def _advance_dungeon_quest_objectives(db, champ_id, run):
@@ -5344,7 +5584,7 @@ def _handle_generic_dungeon_event(handler, db, camp_id, state, event_name,
     elif event_name in (_dungeon_choices(run.get("name")).get(
             "answer_events") or {}):
         # A conversation answer (ServerScriptEvent) scores the room being
-        # talked to; the room battle and the finale form follow from it.
+        # talked to; the finale form follows from the run's total.
         points = _dungeon_choices(run.get("name"))["answer_events"][event_name]
         index = _drun_active_room(run, _drun_current_node(state))
         if index is not None:
@@ -5352,6 +5592,22 @@ def _handle_generic_dungeon_event(handler, db, camp_id, state, event_name,
             _drun_refresh(state)
         log(f"    Dungeon {run.get('name')}: {event_name} room={index} "
             f"points={run.get('answer_points')}")
+    elif event_name in _dungeon_choice_events(run.get("name")):
+        # A dialogue choice (ServerScriptEvent) of the room being talked to:
+        # it decides the room's battle once its conversation closes.
+        index = _drun_active_room(run, _drun_current_node(state))
+        stage = None
+        if index is not None:
+            progress = _drun_progress(run, index)
+            stages = run["rooms"][index].get("stages") or []
+            if progress["stage"] < len(stages):
+                stage = stages[progress["stage"]]
+        recorded = stage is not None and event_name in (stage.get("on") or {})
+        if recorded:
+            run.setdefault("choices", {})[str(index)] = event_name
+            _drun_refresh(state)
+        log(f"    Dungeon {run.get('name')}: choice {event_name} "
+            f"room={index} recorded={recorded}")
     elif event_name == "empty_done":
         _drun_arrive(state, _drun_current_node(state))
     elif event_name == "enc_cancel":
@@ -6485,9 +6741,9 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
 
     if ((ctype or "").upper() == "DUNGEON" and _is_generic_dungeon(state) and
             (event_name in ("conv_done", "empty_done", "enc_cancel",
-                            "visit_node") or event_name in (
-                _dungeon_choices((state.get("DungeonRun") or {}).get("name"))
-                .get("answer_events") or {}))):
+                            "visit_node") or event_name in
+             _dungeon_choice_events(
+                 (state.get("DungeonRun") or {}).get("name")))):
         return _handle_generic_dungeon_event(
             handler, db, camp_id, state, event_name, o_params, comp,
             session_id, reqid, target, instance, conh, uid)
@@ -8274,10 +8530,11 @@ _DUNGEON_REWARDS_PATH = Path(__file__).resolve().parent / "dungeon_rewards.json"
 
 
 def _dungeon_reward_schedule(template_name):
-    """Return the per-run payout of one dungeon, or None.
+    """Return the payout rules of one dungeon, or None.
 
     ``_default`` applies to every generic dungeon; a named entry overrides
-    it.  The boss tier also grants the dungeon's own pack.
+    it.  ``pack`` is the dungeon's own pack (granted by the boss tier and by
+    room rewards marked ``"pack": true``).
     """
     try:
         data = json.loads(_DUNGEON_REWARDS_PATH.read_text())
@@ -8291,17 +8548,50 @@ def _dungeon_reward_schedule(template_name):
     if not schedule:
         return None
     pack = (data.get("packs") or {}).get(name)
-    if pack and isinstance(schedule.get("boss"), dict):
-        schedule["boss"] = dict(schedule["boss"], chest_guid=pack)
+    if pack:
+        schedule["pack"] = pack
     return schedule
+
+
+def _dungeon_claim_key(run, index, stage_index):
+    """Claim key of a dungeon battle's first-win items (once per champion)."""
+    room = (run.get("rooms") or [])[index]
+    return (f"dungeon:{run.get('template')}:{room.get('title')}:"
+            f"{stage_index}")
+
+
+def _drun_scene_stage(run, scene_guid):
+    """``(room index, stage index)`` of the battle that played *scene_guid*.
+
+    The room being played wins; a scene shared by several rooms (variants)
+    is otherwise the first room's, in template order.
+    """
+    scene = str(scene_guid).lower()
+    rooms = run.get("rooms") or []
+    found = None
+    for index, room in enumerate(rooms):
+        for stage_index, stage in enumerate(room.get("stages") or []):
+            if scene not in {str(guid).lower()
+                             for guid in _drun_stage_scenes(stage)}:
+                continue
+            progress = _drun_progress(run, index)
+            if not progress["done"] and progress["stage"] == stage_index:
+                return index, stage_index
+            if found is None:
+                found = (index, stage_index)
+    return found
 
 
 def _dungeon_run_reward_records(state, scene_guid, session):
     """Reward records for a battle won inside a generic dungeon run.
 
-    The payout follows the order of the run's wins, not the room: the first
-    animal beaten in The Tranquil Dream pays the first tier, whichever it is.
-    The finale room's battle pays the boss tier.  The run remembers which
+    A room listed in the dungeon's ``rooms`` pays its own reward (a list:
+    one per battle of the room).  Any other battle pays by the order of the
+    run's wins, not the room: the first animal beaten in The Tranquil Dream
+    pays the first tier, whichever it is; the finale room's battle pays the
+    boss tier with the dungeon's pack.  Gold and XP come with every win;
+    the items (pack, card) only with the champion's first win of that
+    battle (a ``dungeon:`` claim kept across runs).  The run remembers which
     game session earned which tier, so a repeated game-end is idempotent.
     """
     if not scene_guid or not _is_generic_dungeon(state):
@@ -8310,15 +8600,20 @@ def _dungeon_run_reward_records(state, scene_guid, session):
     schedule = _dungeon_reward_schedule(run.get("name"))
     if not schedule:
         return None
-    finale = _drun_finale(run)
     rooms = run.get("rooms") or []
-    boss_scenes = ({str(scene).lower()
-                    for stage in rooms[finale].get("stages") or []
-                    for scene in _drun_stage_scenes(stage)}
-                   if finale is not None else set())
-    if str(scene_guid).lower() in boss_scenes:
+    located = _drun_scene_stage(run, scene_guid)
+    if located is None:
+        return None
+    index, stage_index = located
+    reward = (schedule.get("rooms") or {}).get(rooms[index].get("title"))
+    if isinstance(reward, list):
+        reward = (reward[min(stage_index, len(reward) - 1)]
+                  if reward else None)
+    if reward is None and index == _drun_finale(run):
         reward = schedule.get("boss")
-    else:
+        if isinstance(reward, dict) and "pack" not in reward:
+            reward = dict(reward, pack=True)
+    elif reward is None:
         battles = [entry for entry in schedule.get("battles") or []
                    if isinstance(entry, dict)]
         if not battles:
@@ -8330,7 +8625,17 @@ def _dungeon_run_reward_records(state, scene_guid, session):
         reward = battles[min(earned.index(key), len(battles) - 1)]
     if not isinstance(reward, dict):
         return None
-    return [dict(reward, one_time=False)]
+    records = [{"gold": int(reward.get("gold", 0) or 0),
+                "xp": int(reward.get("xp", 0) or 0), "one_time": False}]
+    items = {}
+    if reward.get("pack") and schedule.get("pack"):
+        items["chest_guid"] = schedule["pack"]
+    if reward.get("card_guid"):
+        items["card_guid"] = reward["card_guid"]
+    if items:
+        records.append(dict(items, one_time=True, claim_key=_dungeon_claim_key(
+            run, index, stage_index)))
+    return records
 
 
 def _apply_encounter_end_rewards(handler, db, session, camp_id, won):
@@ -8392,8 +8697,9 @@ def _apply_encounter_end_rewards(handler, db, session, camp_id, won):
         if one_time is None:
             one_time = reward_obj.get("one_time", True)
         one_time = bool(one_time)
-        claim_key = (f"{scene_guid}:{record_index}" if one_time else
-                     f"{scene_guid}:{record_index}:{session.session_id}")
+        claim_key = record.get("claim_key") or (
+            f"{scene_guid}:{record_index}" if one_time else
+            f"{scene_guid}:{record_index}:{session.session_id}")
         if claims.get(claim_key):
             continue
         condition = record.get("end_of_game_condition")
@@ -9684,6 +9990,10 @@ def _handle_locaction(handler, db, env_json, comp, session_id,
                 ld["completed"] = True
                 _note_visited(state, ld.get("node") or location_name)
                 break
+    if (ctype or "").upper() == "DUNGEON" and _is_generic_dungeon(state):
+        # A DungeonTemplate run's locations derive from the run; a run whose
+        # last life is gone stays in CurState LOSE.
+        _drun_refresh(state)
 
     _save_campaign_state(db, camp_id, state)
     db.commit()
@@ -9726,7 +10036,9 @@ def _handle_forfeit(handler, db, env_json, comp, session_id,
     leaving_dungeon = (_is_generic_dungeon(state) and
                        not state.get("Finished"))
     state["Finished"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    state["FinishReason"] = "Forfeit"
+    # The Dungeon Lost window's OK forfeits a run whose last life is gone.
+    state["FinishReason"] = ("Failed" if leaving_dungeon and
+                             state["DungeonRun"].get("lost") else "Forfeit")
     state["CurState"] = "FINISHED"
 
     _save_campaign_state(db, camp_id, state)

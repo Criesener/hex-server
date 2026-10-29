@@ -72,10 +72,7 @@ CLIENT_LOCATION_TYPES = frozenset({
 # Overworld nodes that legitimately cannot be played on this server.  The
 # check still visits them and requires the safe fallback; it only accepts the
 # listed reason instead of reporting it.
-KNOWN_UNAVAILABLE = {
-    ("AZ1", "Node011"): "Fort Romor: the DungeonTemplate rooms are on nodes "
-                        "the client prefab campaign/az01/fortromor lacks",
-}
+KNOWN_UNAVAILABLE: dict = {}
 
 # Maps the check covers.  AZ2 has seeded paths and scenes but no AREA
 # runtime yet (campaign.py builds only the Howling Plains map), so only its
@@ -953,8 +950,6 @@ def walk_dungeon(db, camp_id, limit=300):
 
 # DungeonTemplates the server does not run from an overworld entrance.
 KNOWN_UNAVAILABLE_DUNGEONS = {
-    "Fort Romor": "the template's rooms are on nodes the client prefab "
-                  "campaign/az01/fortromor lacks (entrance is a safe Empty)",
     "Castle Crayburn": "runs on its own Crayburn code path (checked as the "
                        "Crayburn DUNGEON state)",
     "Howling Plains": "AREA SceneData template, not a dungeon",

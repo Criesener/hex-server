@@ -997,7 +997,9 @@ def extract_campaign_node_conversations(path: str | None = None) -> list[tuple[A
 # and some conversation references dangle.  The conversations and encounter
 # scenes themselves follow a stable ``<Dungeon> - <Room>[ Success| Fail]``
 # naming convention, so the seed resolves each room from the authored events
-# first and fills the gaps from that convention.  The result is stored as
+# first and fills the gaps from that convention.  A room's opponent is its
+# prelude conversation's speaker (``m_ChampionId`` = the scene's AI deck
+# champion) when the authored encounter names another room's speaker.  The result is stored as
 # data (``dungeon_templates``); the campaign runner never names a dungeon.
 
 _DUNGEON_FACTIONS = {"ardent": "Ardent", "underworld": "Underworld"}
@@ -1059,7 +1061,42 @@ def _conversation_names(data: str) -> dict[str, str]:
     return names
 
 
+def _conversation_speakers(data: str) -> dict[str, str]:
+    """ConversationTemplate GUID -> its speaker's champion (``m_ChampionId``).
+
+    Only conversations with a speaker are listed.  The speaker of a dungeon
+    room's prelude is the champion of that room's opponent (Fort Romor:
+    "Fort Romor - Stables" is spoken by the Legionnaire of Gawaine).
+    """
+    speakers = {}
+    for raw in section_text(data, "ConversationTemplate"):
+        guid_match = re.search(
+            r'"m_Id"\s*:\s*\{\s*"m_Guid"\s*:\s*"([0-9a-fA-F-]+)"', raw)
+        champion = re.findall(
+            r'"m_ChampionId"\s*:\s*\{\s*"m_Guid"\s*:\s*"([0-9a-fA-F-]+)"', raw)
+        if guid_match and champion and champion[-1].lower() != ZERO_GUID:
+            speakers[guid_match.group(1).lower()] = champion[-1].lower()
+    return speakers
+
+
+def _encounter_deck_champions(data: str) -> dict[str, str]:
+    """EncounterDeck GUID -> the champion of its deck template."""
+    template_champions = {}
+    for _, record in records(data, "DeckTemplate")[0]:
+        deck_guid = nested_guid(record, "m_Id")
+        if deck_guid:
+            template_champions[deck_guid] = nested_guid(record, "m_ChampionId")
+    champions = {}
+    for _, record in records(data, "EncounterDeck")[0]:
+        deck_guid = nested_guid(record, "m_Id")
+        champion = template_champions.get(nested_guid(record, "m_DeckTemplateId"))
+        if deck_guid and champion and champion != ZERO_GUID:
+            champions[deck_guid] = champion
+    return champions
+
+
 def _encounter_scene_index(data: str) -> dict[str, dict[str, Any]]:
+    deck_champions = _encounter_deck_champions(data)
     scenes = {}
     for _, record in records(data, "SceneData")[0]:
         if not str(record.get("_t") or "").endswith("EncounterScene"):
@@ -1075,6 +1112,7 @@ def _encounter_scene_index(data: str) -> dict[str, dict[str, Any]]:
             "name": str(record.get("m_Name") or ""),
             "title": str(record.get("m_Title") or ""),
             "ai_deck": ai_deck,
+            "champion": deck_champions.get(ai_deck, ""),
             "boss": int_value(record.get("m_IsBossEncounter")),
         }
     return scenes
@@ -1141,13 +1179,17 @@ def _scene_faction(scene: dict[str, Any]) -> str:
 
 
 def resolve_dungeon_rooms(record: dict[str, Any], conversations: dict[str, str],
-                          scenes: dict[str, dict[str, Any]]) -> dict[str, Any]:
+                          scenes: dict[str, dict[str, Any]],
+                          speakers: dict[str, str] | None = None) -> dict[str, Any]:
     """Resolve one DungeonTemplate into ordered, playable rooms.
 
     Each room has ``stages``; a stage plays its ``preludes`` conversations,
     then (optionally) its ``encounter`` with ``success``/``fail`` follow-ups.
     Faction-specific alternatives are kept as ``*_by_faction`` maps.
+    ``speakers`` (conversation -> champion) lets a stage's prelude speaker
+    pick its opponent when the authored encounter is another room's.
     """
+    speakers = speakers or {}
     name = str(record.get("m_Name") or "")
     prefix = _dungeon_tokens(name)
     convs = _dungeon_conversation_catalog(name, conversations)
@@ -1200,6 +1242,34 @@ def resolve_dungeon_rooms(record: dict[str, Any], conversations: dict[str, str],
                 stage["_authored"] = scene
         rooms.append(room)
 
+    # Pass 1b: the room's opponent is its prelude's speaker.  Several AZ1
+    # templates fire the neighbouring room's battle (Fort Romor: the Stables,
+    # spoken by the Legionnaire, fire Commander Hawthorne, the Command Post's
+    # speaker); when the authored scene's champion speaks in another stage,
+    # the scene whose AI champion is this stage's speaker replaces it.
+    def speaker_of(stage: dict[str, Any]) -> str:
+        return next((speakers[c] for c in stage.get("preludes") or []
+                     if c in speakers), "")
+
+    stage_speakers = {speaker_of(stage) for room in rooms
+                      for stage in room["stages"]} - {""}
+    for room in rooms:
+        for stage in room["stages"]:
+            speaker = speaker_of(stage)
+            authored = scenes.get(stage.get("encounter") or "")
+            if not (speaker and authored and authored.get("champion") and
+                    authored["champion"] != speaker and
+                    authored["champion"] in stage_speakers):
+                continue
+            own = sorted((guid for guid, scene in dungeon_scenes.items()
+                          if scene.get("champion") == speaker and
+                          scene.get("ai_deck") and guid not in claimed),
+                         key=lambda guid: dungeon_scenes[guid]["name"])
+            if own:
+                stage["encounter"] = own[0]
+                stage["_speaker"] = True
+                claimed.add(own[0])
+
     def reference_of(room: dict[str, Any], stage: dict[str, Any]) -> list[str]:
         for conversation in stage.get("preludes") or []:
             info = by_guid.get(conversation)
@@ -1213,6 +1283,8 @@ def resolve_dungeon_rooms(record: dict[str, Any], conversations: dict[str, str],
         for stage in room["stages"]:
             scene_guid = stage.get("encounter")
             scene = scenes.get(scene_guid) if scene_guid else None
+            if stage.pop("_speaker", False):
+                continue
             if scene_guid and (not scene or not scene.get("ai_deck")):
                 issues.append(f"{room['title']}: encounter {scene_guid} has no AI deck")
                 stage["encounter"] = None
@@ -1389,6 +1461,7 @@ def _dungeon_entrance(dungeon_name: str,
 
 def _extract_dungeon_templates(data: str) -> list[tuple[Any, ...]]:
     conversations = _conversation_names(data)
+    speakers = _conversation_speakers(data)
     scenes = _encounter_scene_index(data)
     rows = []
     for record in _dungeon_records(data):
@@ -1396,7 +1469,8 @@ def _extract_dungeon_templates(data: str) -> list[tuple[Any, ...]]:
         name = str(record.get("m_Name") or "")
         if not dungeon_guid or not name:
             continue
-        resolved = resolve_dungeon_rooms(record, conversations, scenes)
+        resolved = resolve_dungeon_rooms(record, conversations, scenes,
+                                         speakers)
         entrance_scene, entrance_node = _dungeon_entrance(name, scenes)
         rows.append((dungeon_guid, name, entrance_scene, entrance_node,
                      json_text(resolved["rooms"], []),

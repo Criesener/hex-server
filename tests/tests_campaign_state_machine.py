@@ -2437,10 +2437,21 @@ def test_tranquil_dream_run_completes_its_quest_objective():
         os.unlink(path)
 
 
-def test_tranquil_dream_answers_pick_the_battle_and_boss_form():
-    """The animal talks score 1-3 points (ServerScriptEvent): the answer
-    picks the animal's Easy/Medium/Hard battle and the run's total picks
-    Sister Midnight's form."""
+def _room_location(state, node):
+    return next(loc["Data"] for loc in state["VisLocs"]
+                if loc["Data"]["node"] == node)
+
+
+def _scene_of(db, guid):
+    return campaign.pve_db.db_encounter_scene_runtime(guid, db)[1]
+
+
+def test_tranquil_dream_strength_follows_rank_and_answers_pick_the_form():
+    """Issue #38 C: a dream creature's strength follows the rank of the
+    fight in the run (Easy, Easy, Medium, Medium, Hard), whatever the
+    answer; the five answers' total picks Sister Midnight's form by the
+    video bands (<=7 Conquest, <=9 Savagery, <=11 Retribution, <=13
+    Cunning, <=15 Instinct)."""
     db, path = cloned_db()
     client = _DungeonClient(db)
     try:
@@ -2449,44 +2460,80 @@ def test_tranquil_dream_answers_pick_the_battle_and_boss_form():
         client.event(camp_id, "conv_done")          # Wigwam
         client.startloc(camp_id, "NodeG")
         client.event(camp_id, "conv_done")          # Sister Midnight
-        state = client.startloc(camp_id, "NodeE")   # Dream Bear
-        bear = next(loc["Data"] for loc in state["VisLocs"]
-                    if loc["Data"]["node"] == "NodeE")
-        assert bear["type"] == "Convo", bear
-        client.event(camp_id, "three_point_answer")
-        state = client.event(camp_id, "conv_done")
-        bear = next(loc["Data"] for loc in state["VisLocs"]
-                    if loc["Data"]["node"] == "NodeE")
-        scene = campaign.pve_db.db_encounter_scene_runtime(
-            bear["encounter"], db)
-        assert bear["type"] == "Encounter", bear
-        assert scene[1] == "Tranquil Dream Bear Hard", scene
-        _assert_client_contract(db, state)
-        run = state["DungeonRun"]
+        order = ("NodeE", "NodeB", "NodeF", "NodeC", "NodeD")
+        animals = {"NodeB": "Turtle", "NodeC": "Skarn", "NodeD": "Spider",
+                   "NodeE": "Bear", "NodeF": "Eagle"}
+        ranks = ("Easy", "Easy", "Medium", "Medium", "Hard")
+        for node, rank in zip(order, ranks):
+            state = client.startloc(camp_id, node)
+            assert _room_location(state, node)["type"] == "Convo", node
+            # The answer no longer changes the strength.
+            client.event(camp_id, "three_point_answer")
+            state = client.event(camp_id, "conv_done")
+            room = _room_location(state, node)
+            assert room["type"] == "Encounter", room
+            assert _scene_of(db, room["encounter"]) == \
+                f"Tranquil Dream {animals[node]} {rank}", (node, rank)
+            _assert_client_contract(db, state)
+            state = client.battle(camp_id, True)
+            state = client.event(camp_id, "conv_done")  # Success talk
+        run = client.state(camp_id)["DungeonRun"]
         finale = campaign._drun_finale(run)
         stage = run["rooms"][finale]["stages"][0]
-        forms = {}
-        for total_points, expected in ((1, "Conquest"), (2, "Cunning"),
-                                       (3, "Savagery")):
-            run["answer_points"] = {str(i): total_points for i in range(5)}
+        for points, expected in (([1, 1, 1, 1, 1], "Conquest"),
+                                 ([1, 1, 2, 1, 1], "Conquest"),
+                                 ([2, 2, 1, 1, 1], "Conquest"),
+                                 ([2, 2, 2, 1, 1], "Savagery"),
+                                 ([2, 2, 2, 2, 1], "Savagery"),
+                                 ([3, 2, 2, 2, 1], "Retribution"),
+                                 ([3, 3, 2, 2, 1], "Retribution"),
+                                 ([3, 3, 3, 2, 1], "Cunning"),
+                                 ([3, 3, 3, 3, 1], "Cunning"),
+                                 ([3, 3, 3, 3, 2], "Instinct"),
+                                 ([3, 3, 3, 3, 3], "Instinct")):
+            run["answer_points"] = {str(i): value
+                                    for i, value in enumerate(points)}
             guid = campaign._drun_stage_encounter(run, finale, stage)
-            forms[total_points] = campaign.pve_db.db_encounter_scene_runtime(
-                guid, db)[1]
-            assert forms[total_points].endswith(expected), forms
-        run["answer_points"] = {"0": 1, "1": 2, "2": 1, "3": 2, "4": 1}
-        guid = campaign._drun_stage_encounter(run, finale, stage)
-        assert campaign.pve_db.db_encounter_scene_runtime(
-            guid, db)[1].endswith("Retribution")
+            assert _scene_of(db, guid) == \
+                f"Tranquil Dream Sister Midnight Form of {expected}", points
     finally:
         client.restore()
         db.close()
         os.unlink(path)
 
 
-def test_tranquil_dream_pays_by_win_order_and_boss():
+def _grant_dungeon_win(db, camp_id, scene, session_id):
+    """Apply the game-end rewards of a dungeon battle won on *scene*."""
+    state = json.loads(db.execute(
+        "SELECT state_json FROM campaigns WHERE id=?",
+        (camp_id,)).fetchone()[0])
+    state["ActiveEncounterGuid"] = scene
+    db.execute("UPDATE campaigns SET state_json=? WHERE id=?",
+               (json.dumps(state), camp_id))
+    db.commit()
+    return campaign._apply_encounter_end_rewards(
+        SimpleNamespace(_log_req=lambda *_args: None), db,
+        SimpleNamespace(session_name="test", session_id=session_id),
+        camp_id, True)
+
+
+def _finish_run(db, camp_id):
+    state = json.loads(db.execute(
+        "SELECT state_json FROM campaigns WHERE id=?",
+        (camp_id,)).fetchone()[0])
+    state.update({"Finished": campaign._now_utc(), "FinishReason": "Complete"})
+    db.execute("UPDATE campaigns SET state_json=? WHERE id=?",
+               (json.dumps(state), camp_id))
+    db.commit()
+
+
+TRANQUIL_DREAM_PACK = "88d29ef0-5ec7-49b1-bcc5-8f70c5c4cda5"
+
+
+def test_tranquil_dream_pays_by_win_order_and_the_pack_once():
     """Dungeon payouts follow the order of the run's wins, not the room;
-    the finale pays the boss tier with the Tranquil Dream Pack."""
-    from types import SimpleNamespace
+    the finale pays the boss tier, and the Tranquil Dream Pack only on the
+    champion's first win of Sister Midnight (gold and XP every win)."""
     db, path = cloned_db()
     client = _DungeonClient(db)
     try:
@@ -2509,16 +2556,414 @@ def test_tranquil_dream_pays_by_win_order_and_boss():
         boss = rooms["Sister Midnight"]["stages"][0]["encounter"]
         records = campaign._dungeon_run_reward_records(
             state, boss, SimpleNamespace(session_id=200))
-        assert records == [{"gold": 450, "xp": 350, "one_time": False,
-                            "chest_guid": "88d29ef0-5ec7-49b1-bcc5-8f70c5c4cda5"}], records
-        # Every generic dungeon shares the tiers; its boss grants its pack.
-        usurper = campaign._dungeon_reward_schedule("The Usurper")
-        assert usurper["battles"][0] == {"gold": 75, "xp": 100}, usurper
-        assert usurper["boss"]["chest_guid"] == \
-            "eda1cb9f-9900-4218-a8d1-6564573a9cf2", usurper
+        assert records[0] == {"gold": 450, "xp": 350, "one_time": False}
+        assert records[1]["chest_guid"] == TRANQUIL_DREAM_PACK, records
+        assert records[1]["one_time"] is True, records
+        # First win: currency and the pack; again: currency only.
+        first = _grant_dungeon_win(db, camp_id, boss, 300)
+        assert (first["gold"], first["xp"]) == (450, 350), first
+        assert [c["template"] for c in first["chests"]] == \
+            [TRANQUIL_DREAM_PACK], first
+        again = _grant_dungeon_win(db, camp_id, boss, 301)
+        assert (again["gold"], again["xp"]) == (450, 350), again
+        assert not again["chests"], again
+        # A new run keeps the claim (one pack per champion).
+        _finish_run(db, camp_id)
+        plan = campaign._dungeon_plan(
+            db, 6, campaign._dungeon_template(db, guid=TRANQUIL_DREAM))[0]
+        again_id, again_state = campaign._enter_generic_dungeon(
+            db, 6, plan, "Node040")
+        assert again_id == camp_id and not again_state["Finished"]
+        assert again_state["DungeonRun"]["completed_runs"] == 1
+        later = _grant_dungeon_win(db, camp_id, boss, 302)
+        assert later["gold"] == 450 and not later["chests"], later
+        # A run completed before the claims existed already paid its pack.
+        state = client.state(camp_id)
+        state.pop("_encounter_reward_claims", None)
+        state["DungeonRun"].pop("completed_runs", None)
+        fresh = campaign._build_generic_dungeon_state(camp_id, 6, plan)
+        state.update({"Finished": "x", "FinishReason": "Complete"})
+        carried = campaign._carry_dungeon_claims(state, fresh)
+        finale = campaign._drun_finale(carried["DungeonRun"])
+        assert carried["_encounter_reward_claims"] == {
+            campaign._dungeon_claim_key(carried["DungeonRun"], finale, 0): True}
         # Overworld battles keep their scene rewards.
         assert campaign._dungeon_run_reward_records(
             client.state(_area_id), boss, SimpleNamespace(session_id=1)) is None
+    finally:
+        client.restore()
+        db.close()
+        os.unlink(path)
+
+
+def test_dungeon_rooms_pay_their_own_rewards():
+    """Issue #38 C: Fort Romor, the Usurper, the Smoldering Dead and
+    Devonshire Keep pay per room (P:155-165); items only on the first win
+    (the Ancient Thorn Knight's Voracious Vultures, the final boss's pack)."""
+    db, path = cloned_db()
+    try:
+        expected = {
+            "Fort Romor": {
+                "The Stables": [(200, 150, None)],
+                "The Barracks": [(250, 200, None)],
+                "The Command Post": [(150, 100, None)],
+                "The Defense of Fort Romor": [
+                    (300, 225, None), (400, 250, None),
+                    (500, 450, "faea143f-7193-4ac1-bbb2-f79469d8ad9f")]},
+            "The Usurper": {
+                "Gates of the Bleak Citadel": [(150, 100, None)],
+                "Grimskull Hall": [(200, 150, None)],
+                "Vermin": [(250, 200, None)],
+                "Chamber of Awakening": [(300, 225, None)],
+                "Shepherd's Rest": [(300, 225, None)],
+                "Last Rites": [(500, 450,
+                                "eda1cb9f-9900-4218-a8d1-6564573a9cf2")]},
+            "The Smoldering Dead": {
+                "Snowy Path": [(150, 125, None)],
+                "Tomb of the Rose Knights": [(200, 150, None)],
+                "Crypt of the Thorn Knight": [(600, 300, "card")],
+                "Hall of Relics": [(350, 200, None)],
+                "Haunted Hallway": [(450, 250, None)],
+                "Burial Vault": [(650, 500,
+                                  "56e231a3-f752-4e87-b04a-51c508c87c2d")]},
+            "Devonshire Keep": {
+                "Gate": [(150, 125, None)], "Stable": [(75, 200, None)],
+                "Chapel": [(400, 250, None)], "Vestibule": [(200, 200, None)],
+                "Great Hall": [(400, 250, None)], "Kitchen": [(250, 250, None)],
+                "Oratory": [(500, 300, None)],
+                "Minstrel's Gallery": [(400, 300, None)],
+                "Hall of Scribes": [(450, 350, None)],
+                "Bower": [(550, 400, None)],
+                "Lord Devonshire's Bedchamber": [
+                    (750, 650, "1d54da38-e03e-449c-aa2d-c9a7c0ad2cb1")]},
+        }
+        for name, rooms in expected.items():
+            plan, reason = campaign._dungeon_plan(
+                db, 6, campaign._dungeon_template(db, name=name))
+            assert plan, (name, reason)
+            state = campaign._build_generic_dungeon_state(0, 6, plan)
+            run = state["DungeonRun"]
+            by_title = {room["title"]: (index, room)
+                        for index, room in enumerate(run["rooms"])}
+            for title, stages in rooms.items():
+                index, room = by_title[title]
+                battles = [stage for stage in room["stages"]
+                           if stage.get("encounter")]
+                assert len(battles) == len(stages), (name, title)
+                for stage_index, (gold, xp, item) in enumerate(stages):
+                    # Every variant of the battle pays the room's reward.
+                    for scene in campaign._drun_stage_scenes(
+                            battles[stage_index]):
+                        records = campaign._dungeon_run_reward_records(
+                            state, scene, SimpleNamespace(session_id=1))
+                        assert records[0] == {"gold": gold, "xp": xp,
+                                              "one_time": False}, (
+                            name, title, records)
+                        if item is None:
+                            assert len(records) == 1, (name, title, records)
+                            continue
+                        key = "card_guid" if item == "card" else "chest_guid"
+                        assert records[1]["one_time"] is True, records
+                        assert records[1]["claim_key"] == \
+                            campaign._dungeon_claim_key(run, index, stage_index)
+                        if item == "card":
+                            name_row = db.execute(
+                                "SELECT name, set_guid FROM card_templates "
+                                "WHERE guid=?", (records[1][key],)).fetchone()
+                            assert name_row == (
+                                "Voracious Vultures",
+                                "c363c22e-1c03-43c0-a5d3-e3e8759120e7"), name_row
+                        else:
+                            assert records[1][key] == item, records
+        # The card comes with the first win only.
+        client = _DungeonClient(db)
+        try:
+            _area_id, camp_id = _enter_dungeon(db, client, 6, "Node024")
+            run = client.state(camp_id)["DungeonRun"]
+            crypt = next(room for room in run["rooms"]
+                         if room["title"] == "Crypt of the Thorn Knight")
+            scene = crypt["stages"][0]["encounter"]
+            first = _grant_dungeon_win(db, camp_id, scene, 400)
+            assert first["gold"] == 600 and len(first["cards"]) == 1, first
+            again = _grant_dungeon_win(db, camp_id, scene, 401)
+            assert again["gold"] == 600 and not again["cards"], again
+        finally:
+            client.restore()
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+FORT_ROMOR = "d1461f76-6483-4514-b24b-a499fb65a209"
+
+
+def test_fort_romor_plays_with_each_room_against_its_speaker():
+    """Issue #38 C: Fort Romor's rooms sit on prefab NodeB-NodeE in template
+    order and each room fights its conversation's speaker (Stables ->
+    Legionnaire, Barracks -> Rhonwen, Command Post -> Hawthorne; the
+    Defense: Lords Benjamin, Alexander, Adam once the three are taken)."""
+    db, path = cloned_db()
+    client = _DungeonClient(db)
+    try:
+        _area, camp_id = _enter_dungeon(db, client, 6, "Node011")
+        run = client.state(camp_id)["DungeonRun"]
+        assert run["template"] == FORT_ROMOR
+        rooms = {room["title"]: room for room in run["rooms"]}
+        expected = {
+            "The Stables": ("NodeB", ["Fort Romor - Legionnaire of Gawaine"]),
+            "The Barracks": ("NodeC", ["Fort Romor - Rhonwen"]),
+            "The Command Post": ("NodeD", ["Fort Romor - Commander Hawthorne"]),
+            "The Defense of Fort Romor": ("NodeE", [
+                "Fort Romor - Lord Benjamin", "Fort Romor - Lord Alexander",
+                "Fort Romor - Lord Adam"]),
+        }
+        for title, (node, foes) in expected.items():
+            room = rooms[title]
+            assert room["node"] == node, (title, room["node"])
+            assert [_scene_of(db, stage["encounter"])
+                    for stage in room["stages"]] == foes, title
+        assert run["start"] == "Node001", run["start"]
+        assert {"Node6", "Node7", "Node8"} <= set(run["forks"]), run["forks"]
+        state, played = _walk_dungeon(db, client, camp_id)
+        assert state["FinishReason"] == "Complete", state
+        names = [_conversation_names()[guid] for guid in played]
+        assert names[0] == "Fort Romor - Ruined Gate - Entrance", names
+        fought = [_scene_of(db, guid) for guid in client.launched]
+        defense = [foe for foe in fought if "Lord" in foe]
+        assert defense[-3:] == expected["The Defense of Fort Romor"][1], fought
+        # The Defense opens once the three rooms are taken.
+        first_lord = fought.index("Fort Romor - Lord Benjamin")
+        assert {"Fort Romor - Legionnaire of Gawaine", "Fort Romor - Rhonwen",
+                "Fort Romor - Commander Hawthorne"} <= set(
+                    fought[:first_lord]), fought
+        for room in ("Stables", "Barracks", "Command Post"):
+            assert f"Fort Romor - {room} Success" in names, (room, names)
+        assert names[-1] == \
+            "Fort Romor - Defense of Fort Romor (Lord Adam) Success", names
+    finally:
+        client.restore()
+        db.close()
+        os.unlink(path)
+
+
+def _play_room(db, client, camp_id, node, events=(), won=True):
+    """Enter *node*, close its talk (firing *events*) and fight if asked."""
+    state = client.startloc(camp_id, node)
+    while _room_location(state, node)["type"] == "Convo":
+        for event in events:
+            client.event(camp_id, event)
+        state = client.event(camp_id, "conv_done")
+        if state.get("ALoc") != node:
+            return state
+    room = _room_location(state, node)
+    if room["type"] == "Encounter" and won is not None:
+        state = client.battle(camp_id, won)
+        if _room_location(state, node)["type"] == "Convo":
+            state = client.event(camp_id, "conv_done")
+    return state
+
+
+def test_usurper_shepherds_rest_follows_who_died_and_needs_one_hall():
+    """Issue #38 C (P:139-140): one of the two halls is enough to open the
+    Shepherd's Rest and Last Rites; Finanif's battle names who is dead."""
+    db, path = cloned_db()
+    client = _DungeonClient(db)
+    try:
+        plan, reason = campaign._dungeon_plan(
+            db, 6, campaign._dungeon_template(db, name="The Usurper"))
+        assert plan, reason
+        for halls, variant in ((["NodeC"], "Ghuuhg Dead"),
+                               (["NodeD"], "Mistism Dead"),
+                               (["NodeC", "NodeD"], "Both Dead")):
+            # A fresh run each time (a finished dungeon's entrance is done).
+            camp_id, _state = campaign._enter_generic_dungeon(
+                db, 6, plan, "Node008")
+            client.startcamp(camp_id)
+            client.event(camp_id, "conv_done")      # Entrance
+            for node in ["NodeA", "NodeB"] + halls:
+                state = _play_room(db, client, camp_id, node)
+            shepherd = _room_location(state, "NodeE")
+            assert shepherd["visible"] and shepherd["enabled"], shepherd
+            state = client.startloc(camp_id, "NodeE")
+            state = client.event(camp_id, "conv_done")
+            room = _room_location(state, "NodeE")
+            assert room["type"] == "Encounter", room
+            assert _scene_of(db, room["encounter"]) == \
+                f"Usurper Shepherd's Rest {variant}", (halls, room)
+            state = client.battle(camp_id, True)
+            state = client.event(camp_id, "conv_done")
+            state = _play_room(db, client, camp_id, "NodeF")
+            while client.state(camp_id).get("ALoc") == "NodeF":
+                client.event(camp_id, "conv_done")
+            assert client.state(camp_id)["FinishReason"] == "Complete", halls
+            # Finishing again later starts a fresh run.
+            assert campaign._dungeon_completed_for_champion(
+                db, 6, "The Usurper")
+    finally:
+        client.restore()
+        db.close()
+        os.unlink(path)
+
+
+def test_dungeon_dialogue_choices_shape_their_rooms():
+    """Issue #38 C (P:112-114): the Thorn Knight's crypt can be left alone
+    (and is not needed for the Burial Vault), the Minstrel's Gallery
+    tripwires disabled (no battle), and the Oratory's battle is the dead
+    knight (H1) or the burning zombies (H2)."""
+    db, path = cloned_db()
+    client = _DungeonClient(db)
+    try:
+        assert campaign._dungeon_choice_events("The Smoldering Dead") == {
+            "start_encounter", "choice_wake", "choice_leave"}
+        _area, camp_id = _enter_dungeon(db, client, 6, "Node024")
+        client.startcamp(camp_id)
+        state = client.state(camp_id)
+        while state.get("ALoc") == "NodeA" and \
+                _room_location(state, "NodeA")["type"] == "Convo":
+            state = client.event(camp_id, "conv_done")
+        state = client.battle(camp_id, True)
+        state = client.event(camp_id, "conv_done")
+        state = _play_room(db, client, camp_id, "NodeB")
+        launched = len(client.launched)
+        state = _play_room(db, client, camp_id, "NodeC",
+                           events=("choice_leave",), won=None)
+        crypt = _room_location(state, "NodeC")
+        assert state["ALoc"] == "" and crypt["type"] == "Convo", crypt
+        assert not crypt["completed"], crypt
+        assert len(client.launched) == launched
+        for node in ("NodeD", "NodeF"):
+            state = _play_room(db, client, camp_id, node)
+        vault = _room_location(state, "NodeG")
+        assert vault["visible"] and vault["enabled"], vault
+        state = _play_room(db, client, camp_id, "NodeG")
+        assert client.state(camp_id)["FinishReason"] == "Complete"
+        # Prying the sarcophagus open wakes the knight.
+        run = state["DungeonRun"]
+        index = next(i for i, room in enumerate(run["rooms"])
+                     if room["node"] == "NodeC")
+        stage = run["rooms"][index]["stages"][0]
+        assert stage["on"]["start_encounter"] == {"action": "fight"}
+
+        client.pushes.clear()
+        _area, camp_id = _enter_dungeon(db, client, 6, "Node068")
+        state = client.startcamp(camp_id)
+        run = state["DungeonRun"]
+        rooms = {room["title"]: (i, room) for i, room in enumerate(run["rooms"])}
+        index, oratory = rooms["Oratory"]
+        stage = oratory["stages"][0]
+        assert _scene_of(db, stage["on"]["knight_fight"]["encounter"]) == \
+            "Devonshire Keep H1"
+        assert _scene_of(db, stage["on"]["zombie_fight"]["encounter"]) == \
+            "Devonshire Keep H2"
+        run["choices"] = {str(index): "knight_fight"}
+        assert _scene_of(db, campaign._drun_stage_encounter(
+            run, index, stage)) == "Devonshire Keep H1"
+        run["choices"] = {str(index): "zombie_fight"}
+        assert _scene_of(db, campaign._drun_stage_encounter(
+            run, index, stage)) == "Devonshire Keep H2"
+        # The Minstrel's Gallery: encounter_avoided finishes it unfought.
+        gallery_index, gallery = rooms["Minstrel's Gallery"]
+        state["DungeonRun"]["progress"] = [
+            {"stage": len(room["stages"]), "step": 0, "done": True,
+             "armed": False} if i not in (gallery_index,
+                                          campaign._drun_finale(run))
+            else {"stage": 0, "step": 0, "done": False, "armed": False}
+            for i, room in enumerate(run["rooms"])]
+        state["DungeonRun"].pop("choices", None)
+        state["LastNode"] = gallery["node"]
+        db.execute("UPDATE campaigns SET state_json=? WHERE id=?",
+                   (json.dumps(campaign._drun_refresh(state)), camp_id))
+        db.commit()
+        launched = len(client.launched)
+        state = _play_room(db, client, camp_id, gallery["node"],
+                           events=("encounter_avoided",), won=None)
+        run = state["DungeonRun"]
+        assert run["progress"][gallery_index]["done"], run["progress"]
+        assert len(client.launched) == launched
+        finale = campaign._drun_finale(run)
+        assert campaign._drun_unlocked(run, finale)
+    finally:
+        client.restore()
+        db.close()
+        os.unlink(path)
+
+
+EXPENDABLE_LIVES = "7fb81855-0d02-46a2-99e2-707e829c8169"
+
+
+def test_dungeon_lives_end_the_run():
+    """Issue #38 C (P:108-111): three dungeon lives (+2 with Expendable
+    Lives, the only talent with a DungeonLivesModifier); the last loss ends
+    the run with the client's Dungeon Lost window (CurState LOSE), whose
+    forfeit returns to the AZ1 entrance with the run failed."""
+    from AssetExtraction import gamedata_seed
+    db, path = cloned_db()
+    client = _DungeonClient(db)
+    try:
+        data = (gamedata_seed.load_text() if gamedata_seed.configured_path()
+                else gamedata_seed.load_records_text(
+                    gamedata_seed.configured_records_path()))
+        modifiers = {gamedata_seed.nested_guid(record, "m_Id"):
+                     int(record.get("m_DungeonLivesModifier") or 0)
+                     for _key, record in gamedata_seed.records(
+                         data, "ChampionTalentData")[0]
+                     if int(record.get("m_DungeonLivesModifier") or 0)}
+        assert modifiers == campaign._dungeon_choices("_lives")[
+            "talent_modifiers"], modifiers
+        assert campaign._dungeon_lives(db, 6) == 3 + sum(
+            modifiers.get(t, 0) for t in json.loads(
+                campaign.pve_db.db_champion_talents(6, db) or "[]"))
+        talents = json.loads(campaign.pve_db.db_champion_talents(6, db) or "[]")
+        db.execute("UPDATE champions SET talents=? WHERE id=6",
+                   (json.dumps([t for t in talents if t != EXPENDABLE_LIVES]
+                               + [EXPENDABLE_LIVES]),))
+        assert campaign._dungeon_lives(db, 6) == 5
+        db.execute("UPDATE champions SET talents=? WHERE id=6",
+                   (json.dumps([t for t in talents
+                                if t != EXPENDABLE_LIVES]),))
+        db.commit()
+        assert campaign._dungeon_lives(db, 6) == 3
+
+        area_id, camp_id = _enter_dungeon(db, client, 6, "Node040")
+        client.startcamp(camp_id)
+        client.event(camp_id, "conv_done")          # Wigwam
+        client.startloc(camp_id, "NodeG")
+        client.event(camp_id, "conv_done")          # Sister Midnight
+        client.startloc(camp_id, "NodeB")
+        state = client.event(camp_id, "conv_done")
+        for loss in (1, 2, 3):
+            state = client.battle(camp_id, False)
+            assert state["Losses"] == loss, state["Losses"]
+            assert _room_location(state, "NodeB")["type"] == "Convo"
+            state = client.event(camp_id, "conv_done")   # Fail talk
+            if loss < 3:
+                assert state["CurState"] == "EXPLORE", state["CurState"]
+                assert campaign._drun_lives_left(state) == 3 - loss
+                state = client.startloc(camp_id, "NodeB")
+                assert _room_location(state, "NodeB")["type"] == "Encounter"
+        assert state["CurState"] == "LOSE" and state["ALoc"] == "", state
+        assert not state["Finished"]
+        # No room can be started any more.
+        state = client.startloc(camp_id, "NodeC")
+        assert state["CurState"] == "LOSE" and state["ALoc"] == ""
+        client.pushes.clear()
+        campaign._handle_forfeit(client.handler, db, {"CampID": camp_id},
+                                 *client._args())
+        state = client.state(camp_id)
+        assert state["FinishReason"] == "Failed", state["FinishReason"]
+        back = next(args for args in client.pushes
+                    if args[4] == "dungeon_left")
+        assert back[2] == area_id
+        area = client.state(area_id)
+        assert area["LastNode"] == "Node040"
+        entrance = _room_location(area, "Node040")
+        assert entrance["type"] == "Dungeon" and not entrance["completed"]
+        # Entering again starts over with every life.
+        client.pushes.clear()
+        _area, again = _enter_dungeon(db, client, 6, "Node040")
+        state = client.state(again)
+        assert not state["Finished"] and state["Losses"] == 0
+        assert not state["DungeonRun"].get("lost")
     finally:
         client.restore()
         db.close()
@@ -2545,11 +2990,8 @@ def test_az1_dungeons_play_through_the_generic_runner():
             assert run["FinishReason"] == "Complete", node
             finished.append(run["DungeonRun"]["name"])
         assert {"The Tranquil Dream", "The Usurper", "The Smoldering Dead",
-                "Devonshire Keep"} <= set(finished), finished
-        # Fort Romor's template names nodes its client prefab does not have.
-        assert "Node011" in unavailable, unavailable
-        assert "missing from campaign/az01/fortromor" in \
-            unavailable["Node011"], unavailable
+                "Devonshire Keep", "Fort Romor"} <= set(finished), finished
+        assert not unavailable, unavailable
     finally:
         client.restore()
         db.close()
@@ -3263,8 +3705,7 @@ def test_every_az1_node_keeps_the_client_contract():
         # Gated nodes were opened (forced, or through the story), not skipped.
         assert "forced open (hidden, quest-blocked)" in notes["Node021"]
         for node in AZ1_DUNGEON_ENTRANCES:
-            if node != "Node011":  # Fort Romor: the safe Empty fallback
-                assert "area_dungeon -> DUNGEON" in notes[node], notes[node]
+            assert "area_dungeon -> DUNGEON" in notes[node], notes[node]
         assert "area_panorama -> PANORAMA" in notes["Node017"]
 
         assert not check.AREA_MAPS["AZ2"]["runtime"]
@@ -3285,10 +3726,10 @@ def test_every_dungeon_map_keeps_the_client_contract():
         results = {name: (status, problems) for name, status, problems in
                    check.check_dungeons(db, 6)}
         for name in ("The Tranquil Dream", "The Usurper",
-                     "The Smoldering Dead", "Devonshire Keep"):
+                     "The Smoldering Dead", "Devonshire Keep", "Fort Romor"):
             assert results[name] == ("finished", {}), (name, results[name])
-        for name in ("Fort Romor", "Castle Crayburn"):
-            assert results[name][0].startswith("known: "), results[name]
+        assert results["Castle Crayburn"][0].startswith("known: "), \
+            results["Castle Crayburn"]
         # AZ2 dungeons have no overworld entrance yet but already run.
         for name in ("Brutecrown Bluff", "Great Machine Graveyard",
                      "Ruins of Kukatan"):
@@ -3714,8 +4155,13 @@ if __name__ == "__main__":
         test_dungeon_entrances_are_never_deckless_battles,
         test_tranquil_dream_entrance_starts_its_dungeon,
         test_tranquil_dream_run_completes_its_quest_objective,
-        test_tranquil_dream_pays_by_win_order_and_boss,
-        test_tranquil_dream_answers_pick_the_battle_and_boss_form,
+        test_tranquil_dream_pays_by_win_order_and_the_pack_once,
+        test_tranquil_dream_strength_follows_rank_and_answers_pick_the_form,
+        test_dungeon_rooms_pay_their_own_rewards,
+        test_fort_romor_plays_with_each_room_against_its_speaker,
+        test_usurper_shepherds_rest_follows_who_died_and_needs_one_hall,
+        test_dungeon_dialogue_choices_shape_their_rooms,
+        test_dungeon_lives_end_the_run,
         test_az1_dungeons_play_through_the_generic_runner,
         test_start_event_on_a_dungeon_entrance_enters_it,
         test_leaving_a_dungeon_returns_to_its_entrance,

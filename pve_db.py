@@ -1251,6 +1251,14 @@ def db_campaign_talents(campaign_id, conn=None):
     return row[0] if row else None
 
 
+def db_champion_talents(champion_id, conn=None):
+    """Return a champion's serialized talents (a JSON GUID list) or None."""
+    row = _connection(conn).execute(
+        "SELECT talents FROM champions WHERE id=?",
+        (champion_id,)).fetchone()
+    return row[0] if row else None
+
+
 def db_talent_descriptions(talent_guids, conn=None):
     """Return descriptions for a set of authored talent GUIDs."""
     if not talent_guids:

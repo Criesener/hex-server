@@ -1,5 +1,5 @@
 {
-  "_comment": "Per-run payouts of the generic dungeon runner. 'battles' is indexed by the order in which a run's battles are won (1st win, 2nd win, ...; the last entry repeats), 'boss' is the finale room's battle, which also grants the dungeon's pack from 'packs' (DungeonTemplate name -> chest template GUID). A dungeon entry may override 'battles'/'boss'. Castle Crayburn has its own runner and is not affected.",
+  "_comment": "Payouts of the generic dungeon runner. Gold and XP are paid on every win; items (the dungeon's pack, cards) only on the champion's first win of that room (one claim per champion, kept across runs). 'rooms' maps a DungeonTemplate room title (m_Title) to its battle's reward, or to a list with one reward per battle of the room; 'pack': true grants the dungeon's pack from 'packs' (DungeonTemplate name -> chest template GUID), 'card_guid' a card. A room without an entry pays by win order: 'battles' is indexed by the order in which a run's battles are won (1st win, 2nd win, ...; the last entry repeats) and 'boss' is the finale room's battle, which also grants the pack. A dungeon entry may override 'battles'/'boss'/'rooms'. Values: HEX Revival progression notes (videos), github.com/Theveninm/Hex-shard-of-fates-revival docs/PROGRESSION.md and Progression.cs. Castle Crayburn has its own runner and is not affected.",
   "_default": {
     "battles": [
       {
@@ -40,7 +40,7 @@
     "The Kraken": "ff8aa8df-d962-4bce-8db0-82aea74b3088"
   },
   "The Tranquil Dream": {
-    "_source": "Gold/XP per win order and boss from the HEX Revival progression notes (videos): github.com/Theveninm/Hex-shard-of-fates-revival docs/PROGRESSION.md",
+    "_source": "Gold/XP by the rank of the creature beaten (the run's win order) and Sister Midnight with the Tranquil Dream Pack (first win only).",
     "battles": [
       {
         "gold": 75,
@@ -66,6 +66,57 @@
     "boss": {
       "gold": 450,
       "xp": 350
+    }
+  },
+  "Fort Romor": {
+    "_source": "Per foe (video); the Defense's three battles in order, the pack with Lord Adam.",
+    "rooms": {
+      "The Stables": {"foe": "Legionnaire of Gawaine", "gold": 200, "xp": 150},
+      "The Barracks": {"foe": "Rhonwen", "gold": 250, "xp": 200},
+      "The Command Post": {"foe": "Commander Hawthorne", "gold": 150, "xp": 100},
+      "The Defense of Fort Romor": [
+        {"foe": "Lord Benjamin", "gold": 300, "xp": 225},
+        {"foe": "Lord Alexander", "gold": 400, "xp": 250},
+        {"foe": "Lord Adam", "gold": 500, "xp": 450, "pack": true}
+      ]
+    }
+  },
+  "The Usurper": {
+    "_source": "Per room (video); Finanif at the Shepherd's Rest is PLACEHOLDER (Revival PLACEHOLDERS.md: never fought on video).",
+    "rooms": {
+      "Gates of the Bleak Citadel": {"foe": "Gardrag", "gold": 150, "xp": 100},
+      "Grimskull Hall": {"foe": "Grim Skull Sorcerers", "gold": 200, "xp": 150},
+      "Vermin": {"foe": "Ghuuhg", "gold": 250, "xp": 200},
+      "Chamber of Awakening": {"foe": "Mistsim", "gold": 300, "xp": 225},
+      "Shepherd's Rest": {"foe": "Finanif", "gold": 300, "xp": 225, "_placeholder": true},
+      "Last Rites": {"foe": "Verrev", "gold": 500, "xp": 450, "pack": true}
+    }
+  },
+  "The Smoldering Dead": {
+    "_source": "Per room (video; values by room as in Revival Progression.cs, foe labels cosmetic); the Ancient Thorn Knight gives Voracious Vultures (AZ1 PvE set) on the first win.",
+    "rooms": {
+      "Snowy Path": {"foe": "Sir Bryce / Moxom (by faction)", "gold": 150, "xp": 125},
+      "Tomb of the Rose Knights": {"foe": "Raving Ghoul", "gold": 200, "xp": 150},
+      "Crypt of the Thorn Knight": {"foe": "Ancient Thorn Knight", "gold": 600, "xp": 300, "card_guid": "ceeb3fb0-811f-45dd-ab84-de9e42871f28", "card": "Voracious Vultures"},
+      "Hall of Relics": {"foe": "Blight Magus", "gold": 350, "xp": 200},
+      "Haunted Hallway": {"foe": "King Edmund", "gold": 450, "xp": 250},
+      "Burial Vault": {"foe": "Inferno Goliath", "gold": 650, "xp": 500, "pack": true}
+    }
+  },
+  "Devonshire Keep": {
+    "_source": "Per room (video); the Oratory pays the same for the knight (H1) and the zombies (H2).",
+    "rooms": {
+      "Gate": {"gold": 150, "xp": 125},
+      "Stable": {"gold": 75, "xp": 200},
+      "Chapel": {"gold": 400, "xp": 250},
+      "Vestibule": {"gold": 200, "xp": 200},
+      "Great Hall": {"gold": 400, "xp": 250},
+      "Kitchen": {"gold": 250, "xp": 250},
+      "Oratory": {"gold": 500, "xp": 300},
+      "Minstrel's Gallery": {"gold": 400, "xp": 300},
+      "Hall of Scribes": {"gold": 450, "xp": 350},
+      "Bower": {"gold": 550, "xp": 400},
+      "Lord Devonshire's Bedchamber": {"foe": "Wiktor", "gold": 750, "xp": 650, "pack": true}
     }
   }
 }

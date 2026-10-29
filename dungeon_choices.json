@@ -1,18 +1,71 @@
 {
-  "_comment": "Conversation choices that shape a generic dungeon run, keyed by DungeonTemplate name. 'answer_events' maps a conversation ServerScriptEvent (sent by the client as a campaign sendevent) to points for the room being talked to. 'difficulty_by_points' swaps the room battle's trailing variant word (Tranquil Dream Bear Easy -> Medium/Hard). 'boss_form_by_total' picks the finale scene variant from the run's point total: the first band whose upper bound is >= the total wins. The client data carries no rule; Tranquil Dream's peaceful answers score 1 and lead to Diamond/Ruby Conquest (reported by players), and the five forms follow the colour wheel Conquest (Diamond/Ruby) -> Retribution (Diamond/Blood) -> Cunning (Sapphire/Blood) -> Instinct (Sapphire/Wild) -> Savagery (Ruby/Wild).",
+  "_comment": "Run rules of the generic dungeon runner, keyed by DungeonTemplate name; rooms are named by their DungeonTemplate room title (m_Title). 'answer_events' maps a conversation ServerScriptEvent (sent by the client as a campaign sendevent) to points for the room being talked to; 'boss_form_by_total' picks the finale scene variant from the run's point total (the first band whose upper bound is >= the total wins). 'difficulty_by_rank' swaps a room battle's trailing variant word by the battle's rank in the run (1st, 2nd, ... room cleared). 'rooms' holds per-room rules: 'on' maps a ServerScriptEvent of the room's conversation to 'fight' (the room's battle), 'skip' (the room is done without a battle), 'leave' (nothing happens, the room stays to be done later) or {'scene': <EncounterScene name>} (that battle instead); 'requires_any'/'requires_all' name the rooms that open it; 'optional' rooms are not needed to open the finale (which otherwise waits for every other room); 'encounter_by_cleared' picks the battle by which rooms are done (first match wins). The events are the conversations' own (client ConversationTemplate m_OnSelectedEvents); what each one leads to follows the HEX Revival progression notes (github.com/Theveninm/Hex-shard-of-fates-revival docs/PROGRESSION.md, Dungeons.cs).",
+  "_lives": {
+    "_comment": "Dungeon lives (client TalentManager.GetTotalDungeonLives): 3 plus every talent's ChampionTalentData.m_DungeonLivesModifier; in the client data only Expendable Lives (Shin'hare) has one (+2). A lost battle costs a life; losing the last one ends the run (CurState LOSE: the client's Dungeon Lost window, whose OK forfeits the run back to the AZ1 entrance). Castle Crayburn has its own runner and no limit.",
+    "base": 3,
+    "talent_modifiers": {
+      "7fb81855-0d02-46a2-99e2-707e829c8169": 2
+    }
+  },
   "The Tranquil Dream": {
+    "_comment": "Strength by rank (video: 12, 12, 18, 18, 24 health in runs with different creature orders and answers). Forms by the five tales' answer total: 6 Conquest, 8 Savagery, 11 Retribution are seen on video; the 7/9 limits and Cunning (12-13) / Instinct (14-15) are PLACEHOLDER (Revival PLACEHOLDERS.md:46, never seen).",
     "answer_events": {
       "one_point_answer": 1,
       "two_point_answer": 2,
       "three_point_answer": 3
     },
-    "difficulty_by_points": {"1": "Easy", "2": "Medium", "3": "Hard"},
+    "difficulty_by_rank": ["Easy", "Easy", "Medium", "Medium", "Hard"],
     "boss_form_by_total": [
-      [6, "Conquest"],
-      [8, "Retribution"],
-      [10, "Cunning"],
-      [12, "Instinct"],
-      [15, "Savagery"]
+      [7, "Conquest"],
+      [9, "Savagery"],
+      [11, "Retribution"],
+      [13, "Cunning"],
+      [15, "Instinct"]
     ]
+  },
+  "The Usurper": {
+    "_comment": "Shepherd's Rest: Finanif's battle by who died before (Ghuuhg in the Hall of Vermin, Mistsim in the Chamber of Awakening; the scene name spells 'Mistism'); one of the two halls is enough to go on.",
+    "rooms": {
+      "Vermin": {"optional": true},
+      "Chamber of Awakening": {"optional": true},
+      "Shepherd's Rest": {
+        "requires_any": ["Vermin", "Chamber of Awakening"],
+        "encounter_by_cleared": [
+          [["Vermin", "Chamber of Awakening"], "Usurper Shepherd's Rest Both Dead"],
+          [["Vermin"], "Usurper Shepherd's Rest Ghuuhg Dead"],
+          [["Chamber of Awakening"], "Usurper Shepherd's Rest Mistism Dead"]
+        ]
+      }
+    }
+  },
+  "The Smoldering Dead": {
+    "_comment": "The Thorn Knight's crypt: prying the sarcophagus open (start_encounter) or the statue's curse (choice_wake) wakes him; leaving the room (choice_leave) leaves him alone, and the crypt is not needed for the Burial Vault.",
+    "rooms": {
+      "Crypt of the Thorn Knight": {
+        "optional": true,
+        "on": {
+          "start_encounter": "fight",
+          "choice_wake": "fight",
+          "choice_leave": "leave"
+        }
+      }
+    }
+  },
+  "Devonshire Keep": {
+    "_comment": "Oratory: prying the ruby out brings the burning zombies (H2), leaving it the dead knight (H1). Minstrel's Gallery: the tripwires disabled (encounter_avoided) is no battle.",
+    "rooms": {
+      "Oratory": {
+        "on": {
+          "zombie_fight": {"scene": "Devonshire Keep H2"},
+          "knight_fight": {"scene": "Devonshire Keep H1"}
+        }
+      },
+      "Minstrel's Gallery": {
+        "on": {
+          "encounter_avoided": "skip",
+          "encounter_triggered": "fight"
+        }
+      }
+    }
   }
 }
