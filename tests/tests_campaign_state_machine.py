@@ -2400,8 +2400,9 @@ def test_tranquil_dream_run_completes_its_quest_objective():
             assert (f"Tranquil Dream - The Dream {animal} Success"
                     in played_names), (animal, played_names)
         assert any(name.endswith(" Fail") for name in played_names)
-        assert played_names[-1] == \
-            "Tranquil Dream - Sister Midnight 2 Success", played_names
+        assert played_names[-2:] == [
+            "Tranquil Dream - Sister Midnight 2 Success",
+            "Tranquil Dream - Wigwam 2"], played_names
         quest_id, quest = campaign._quest_state_row(db, 6, "q_tranquil_dream")
         assert quest["Flags"]["_quest_objective_idx"] == 1, quest["Flags"]
         assert any(args[4] == "quest_progress" and args[2] == quest_id
@@ -2415,6 +2416,52 @@ def test_tranquil_dream_run_completes_its_quest_objective():
         assert entrance["type"] == "Dungeon" and entrance["completed"]
         assert area["LastNode"] == "Node040"
         assert campaign.pve_db.db_champion_last_campaign_id(6, db) == area_id
+    finally:
+        client.restore()
+        db.close()
+        os.unlink(path)
+
+
+def test_tranquil_dream_answers_pick_the_battle_and_boss_form():
+    """The animal talks score 1-3 points (ServerScriptEvent): the answer
+    picks the animal's Easy/Medium/Hard battle and the run's total picks
+    Sister Midnight's form."""
+    db, path = cloned_db()
+    client = _DungeonClient(db)
+    try:
+        _area_id, camp_id = _enter_dungeon(db, client, 6, "Node040")
+        client.startcamp(camp_id)
+        client.event(camp_id, "conv_done")          # Wigwam
+        client.startloc(camp_id, "NodeG")
+        client.event(camp_id, "conv_done")          # Sister Midnight
+        state = client.startloc(camp_id, "NodeE")   # Dream Bear
+        bear = next(loc["Data"] for loc in state["VisLocs"]
+                    if loc["Data"]["node"] == "NodeE")
+        assert bear["type"] == "Convo", bear
+        client.event(camp_id, "three_point_answer")
+        state = client.event(camp_id, "conv_done")
+        bear = next(loc["Data"] for loc in state["VisLocs"]
+                    if loc["Data"]["node"] == "NodeE")
+        scene = campaign.pve_db.db_encounter_scene_runtime(
+            bear["encounter"], db)
+        assert bear["type"] == "Encounter", bear
+        assert scene[1] == "Tranquil Dream Bear Hard", scene
+        _assert_client_contract(db, state)
+        run = state["DungeonRun"]
+        finale = campaign._drun_finale(run)
+        stage = run["rooms"][finale]["stages"][0]
+        forms = {}
+        for total_points, expected in ((1, "Conquest"), (2, "Cunning"),
+                                       (3, "Savagery")):
+            run["answer_points"] = {str(i): total_points for i in range(5)}
+            guid = campaign._drun_stage_encounter(run, finale, stage)
+            forms[total_points] = campaign.pve_db.db_encounter_scene_runtime(
+                guid, db)[1]
+            assert forms[total_points].endswith(expected), forms
+        run["answer_points"] = {"0": 1, "1": 2, "2": 1, "3": 2, "4": 1}
+        guid = campaign._drun_stage_encounter(run, finale, stage)
+        assert campaign.pve_db.db_encounter_scene_runtime(
+            guid, db)[1].endswith("Retribution")
     finally:
         client.restore()
         db.close()
@@ -2701,6 +2748,7 @@ if __name__ == "__main__":
         test_tranquil_dream_entrance_starts_its_dungeon,
         test_tranquil_dream_run_completes_its_quest_objective,
         test_tranquil_dream_pays_by_win_order_and_boss,
+        test_tranquil_dream_answers_pick_the_battle_and_boss_form,
         test_az1_dungeons_play_through_the_generic_runner,
         test_start_event_on_a_dungeon_entrance_enters_it,
         test_leaving_a_dungeon_returns_to_its_entrance,

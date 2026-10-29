@@ -1,0 +1,18 @@
+{
+  "_comment": "Conversation choices that shape a generic dungeon run, keyed by DungeonTemplate name. 'answer_events' maps a conversation ServerScriptEvent (sent by the client as a campaign sendevent) to points for the room being talked to. 'difficulty_by_points' swaps the room battle's trailing variant word (Tranquil Dream Bear Easy -> Medium/Hard). 'boss_form_by_total' picks the finale scene variant from the run's point total: the first band whose upper bound is >= the total wins. The client data carries no rule; Tranquil Dream's peaceful answers score 1 and lead to Diamond/Ruby Conquest (reported by players), and the five forms follow the colour wheel Conquest (Diamond/Ruby) -> Retribution (Diamond/Blood) -> Cunning (Sapphire/Blood) -> Instinct (Sapphire/Wild) -> Savagery (Ruby/Wild).",
+  "The Tranquil Dream": {
+    "answer_events": {
+      "one_point_answer": 1,
+      "two_point_answer": 2,
+      "three_point_answer": 3
+    },
+    "difficulty_by_points": {"1": "Easy", "2": "Medium", "3": "Hard"},
+    "boss_form_by_total": [
+      [6, "Conquest"],
+      [8, "Retribution"],
+      [10, "Cunning"],
+      [12, "Instinct"],
+      [15, "Savagery"]
+    ]
+  }
+}

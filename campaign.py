@@ -4145,6 +4145,9 @@ def _dungeon_plan(db, champ_id, template):
                 "encounter": encounter,
                 "success": pick("success") if encounter else None,
                 "fail": pick("fail") if encounter else None,
+                "after_success": [str(value).lower() for value in
+                                  stage.get("after_success") or [] if value]
+                                 if encounter else [],
             })
         rooms.append({"node": str(room["node"]),
                       "title": str(room.get("title") or room["node"]),
@@ -4157,6 +4160,7 @@ def _dungeon_plan(db, champ_id, template):
         return None, "no playable room"
     if not template.get("entrance_scene"):
         return None, "no overworld entrance scene"
+    _apply_dungeon_choice_variants(db, template["name"], rooms)
     forks = sorted(node for node in prefab_nodes
                    if node.lower().startswith("fork"))
     return {
@@ -4166,6 +4170,92 @@ def _dungeon_plan(db, champ_id, template):
         "start": rooms[0]["node"], "edges": [list(edge) for edge in edges],
         "forks": forks, "rooms": rooms,
     }, None
+
+
+_DUNGEON_CHOICES_PATH = Path(__file__).resolve().parent / "dungeon_choices.json"
+
+
+def _dungeon_choices(template_name):
+    """The conversation-choice rules of one dungeon (dungeon_choices.json)."""
+    try:
+        data = json.loads(_DUNGEON_CHOICES_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+    rules = data.get(str(template_name or ""))
+    return rules if isinstance(rules, dict) else {}
+
+
+def _scene_variant_guid(db, scene_guid, variant):
+    """The sibling of *scene_guid* whose last name word is *variant*."""
+    runtime = pve_db.db_encounter_scene_runtime(scene_guid, db)
+    words = str((runtime or ("", ""))[1] or "").split()
+    if not words:
+        return None
+    guid = pve_db.db_encounter_scene_guid_by_name(
+        " ".join(words[:-1] + [str(variant)]), db)
+    if guid and _scene_has_ai_deck(pve_db.db_encounter_scene_runtime(guid, db)):
+        return guid
+    return None
+
+
+def _apply_dungeon_choice_variants(db, template_name, rooms):
+    """Attach the answer-driven battle variants to a dungeon plan.
+
+    A room battle gets ``encounter_by_points`` (its conversation's answer
+    picks Easy/Medium/Hard); the finale gets ``encounter_by_total`` (the
+    run's point total picks Sister Midnight's form).  The authored
+    ``encounter`` stays the fallback when no answer was recorded.
+    """
+    rules = _dungeon_choices(template_name)
+    if not rules:
+        return
+    with_content = [index for index, room in enumerate(rooms)
+                    if room.get("stages")]
+    finale = with_content[-1] if with_content else None
+    for index, room in enumerate(rooms):
+        for stage in room.get("stages") or []:
+            scene = stage.get("encounter")
+            if not scene:
+                continue
+            if index == finale and rules.get("boss_form_by_total"):
+                bands = []
+                for bound, variant in rules["boss_form_by_total"]:
+                    guid = _scene_variant_guid(db, scene, variant)
+                    if guid:
+                        bands.append([int(bound), guid])
+                if bands:
+                    stage["encounter_by_total"] = bands
+            elif rules.get("difficulty_by_points"):
+                variants = {}
+                for points, variant in rules["difficulty_by_points"].items():
+                    guid = _scene_variant_guid(db, scene, variant)
+                    if guid:
+                        variants[str(points)] = guid
+                if variants:
+                    stage["encounter_by_points"] = variants
+
+
+def _drun_stage_encounter(run, index, stage):
+    """The battle scene a stage plays, given the run's recorded answers."""
+    points = run.get("answer_points") or {}
+    by_total = stage.get("encounter_by_total")
+    if by_total and points:
+        total = sum(int(value or 0) for value in points.values())
+        for bound, guid in by_total:
+            if total <= int(bound):
+                return guid
+        return by_total[-1][1]
+    by_points = stage.get("encounter_by_points") or {}
+    chosen = by_points.get(str(points.get(str(index), "")))
+    return chosen or stage.get("encounter")
+
+
+def _drun_stage_scenes(stage):
+    """Every scene a stage may play (catalog and reward lookups)."""
+    scenes = [stage.get("encounter")]
+    scenes += list((stage.get("encounter_by_points") or {}).values())
+    scenes += [guid for _bound, guid in stage.get("encounter_by_total") or []]
+    return [scene for scene in dict.fromkeys(scenes) if scene]
 
 
 def _drun_finale(run):
@@ -4213,7 +4303,7 @@ def _drun_step(run, index):
     if progress["step"] < len(preludes):
         return ("conv", preludes[progress["step"]])
     if stage.get("encounter"):
-        return ("battle", stage["encounter"])
+        return ("battle", _drun_stage_encounter(run, index, stage))
     return None
 
 
@@ -4327,9 +4417,9 @@ def _drun_refresh(state):
     encounters = []
     for room in rooms:
         for stage in room.get("stages") or []:
-            scene = stage.get("encounter")
-            if scene and scene not in encounters:
-                encounters.append(scene)
+            for scene in _drun_stage_scenes(stage):
+                if scene not in encounters:
+                    encounters.append(scene)
     state["Encounters"] = [{"Name": guid, "Data": {"encscene": guid}}
                            for guid in encounters]
     return state
@@ -4434,6 +4524,14 @@ def _drun_conv_done(state):
     if pending and rooms[pending["room"]]["node"] == node:
         run["pending"] = None
         closed = pending.get("conversation")
+        queue = list(pending.get("queue") or [])
+        if pending.get("won") and queue:
+            # The finale's epilogue ("Wigwam 2") follows its Success talk.
+            run["pending"] = dict(pending, conversation=queue[0],
+                                  queue=queue[1:])
+            state["ALoc"] = node
+            state["CurState"] = "EXPLORE"
+            return _drun_refresh(state), closed
         if pending.get("won"):
             _drun_finish_stage(run, pending["room"])
         else:
@@ -4477,7 +4575,9 @@ def _drun_battle_end(state, won):
     _drun_progress(run, index)["armed"] = False
     if follow_up:
         run["pending"] = {"room": index, "conversation": follow_up,
-                          "won": bool(won)}
+                          "won": bool(won),
+                          "queue": list(stage.get("after_success") or [])
+                          if won else []}
         state["ALoc"] = node
         state["LastNode"] = node
         state["CurState"] = "EXPLORE"
@@ -4655,6 +4755,17 @@ def _handle_generic_dungeon_event(handler, db, camp_id, state, event_name,
                 handler, db, camp_id, state, closed)
         log(f"    Dungeon {run.get('name')}: conv_done {closed} -> "
             f"ALoc={state.get('ALoc')!r}")
+    elif event_name in (_dungeon_choices(run.get("name")).get(
+            "answer_events") or {}):
+        # A conversation answer (ServerScriptEvent) scores the room being
+        # talked to; the room battle and the finale form follow from it.
+        points = _dungeon_choices(run.get("name"))["answer_events"][event_name]
+        index = _drun_active_room(run, _drun_current_node(state))
+        if index is not None:
+            run.setdefault("answer_points", {})[str(index)] = int(points)
+            _drun_refresh(state)
+        log(f"    Dungeon {run.get('name')}: {event_name} room={index} "
+            f"points={run.get('answer_points')}")
     elif event_name == "empty_done":
         _drun_arrive(state, _drun_current_node(state))
     elif event_name == "enc_cancel":
@@ -5787,8 +5898,10 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
         state = _build_initial_gameplay_state(camp_id, champ_id, ctype or "AREA")
 
     if ((ctype or "").upper() == "DUNGEON" and _is_generic_dungeon(state) and
-            event_name in ("conv_done", "empty_done", "enc_cancel",
-                           "visit_node")):
+            (event_name in ("conv_done", "empty_done", "enc_cancel",
+                            "visit_node") or event_name in (
+                _dungeon_choices((state.get("DungeonRun") or {}).get("name"))
+                .get("answer_events") or {}))):
         return _handle_generic_dungeon_event(
             handler, db, camp_id, state, event_name, o_params, comp,
             session_id, reqid, target, instance, conh, uid)
@@ -7554,8 +7667,9 @@ def _dungeon_run_reward_records(state, scene_guid, session):
         return None
     finale = _drun_finale(run)
     rooms = run.get("rooms") or []
-    boss_scenes = ({str(stage.get("encounter") or "").lower()
-                    for stage in rooms[finale].get("stages") or []}
+    boss_scenes = ({str(scene).lower()
+                    for stage in rooms[finale].get("stages") or []
+                    for scene in _drun_stage_scenes(stage)}
                    if finale is not None else set())
     if str(scene_guid).lower() in boss_scenes:
         reward = schedule.get("boss")

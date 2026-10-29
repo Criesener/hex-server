@@ -1339,6 +1339,28 @@ def resolve_dungeon_rooms(record: dict[str, Any], conversations: dict[str, str],
                                       "success": None, "fail": None})
                 break
 
+    # The opening room's "<X>" often has an unused "<X> 2" (Tranquil Dream:
+    # "Wigwam 2", waking up by the river).  It closes the run: play it after
+    # the finale's Success conversation.
+    used = {guid for room in rooms for stage in room["stages"]
+            for guid in (stage["preludes"] + [stage.get("success"),
+                                              stage.get("fail")]) if guid}
+    opening = next((room for room in rooms if room["node"] and room["stages"]),
+                   None)
+    finale = next((room for room in reversed(rooms)
+                   if any(stage.get("encounter") for stage in room["stages"])),
+                  None)
+    if opening and finale and finale is not opening:
+        bases = {by_guid[c]["base"] for c in opening["stages"][0]["preludes"]
+                 if c in by_guid and not by_guid[c]["outcome"]}
+        epilogue = [c["guid"] for c in convs
+                    if not c["outcome"] and c["guid"] not in used and any(
+                        re.fullmatch(re.escape(base) + r" \d+", c["base"])
+                        for base in bases)]
+        last = finale["stages"][-1]
+        if epilogue and last.get("success"):
+            last["after_success"] = epilogue[:1]
+
     # The nodeless "Entrance" record fires when the dungeon starts: its
     # content opens the first mapped room.
     mapped = [room for room in rooms if room["node"]]

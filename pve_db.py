@@ -1324,6 +1324,14 @@ def db_encounter_scene_runtime(scene_guid, conn=None):
         "WHERE guid=?", (str(scene_guid),)).fetchone()
 
 
+def db_encounter_scene_guid_by_name(name, conn=None):
+    """Return the GUID of the encounter scene with this exact name."""
+    row = _connection(conn).execute(
+        "SELECT guid FROM encounter_scenes WHERE lower(name)=lower(?) "
+        "ORDER BY guid LIMIT 1", (str(name),)).fetchone()
+    return str(row[0]).lower() if row else None
+
+
 def db_campaign_template_name(campaign_id, conn=None):
     """Return a campaign's template/script name."""
     row = _connection(conn).execute(
