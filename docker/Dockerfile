@@ -30,6 +30,7 @@ COPY server_perks.json /hex/server_perks.json
 COPY dungeon_rewards.json /hex/dungeon_rewards.json
 COPY dungeon_choices.json /hex/dungeon_choices.json
 COPY az1_node_variants.json /hex/az1_node_variants.json
+COPY pack_loot_tables.json /hex/pack_loot_tables.json
 COPY AssetExtraction/ /hex/AssetExtraction/
 COPY abilities/ /hex/abilities/
 COPY application/ /hex/application/

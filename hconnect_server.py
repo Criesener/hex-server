@@ -310,7 +310,8 @@ from pve_db import (db_campaign_user_id, db_campaign_identity_state,
                     db_campaign_summary_row)
 from static import CRAYBURN_PACK_CARD_SEEDS
 from az1_pack import (CAMPAIGN_PACK_CONFIGS, STARDUST_REPLACEMENT_RATE,
-                      generate_campaign_pack)
+                      generate_campaign_pack, generate_observed_pack,
+                      pack_loot_table)
 
 if TYPE_CHECKING:
     from gamedata import AbilityGraph
@@ -616,18 +617,25 @@ def _generate_chest_rewards(chest, card_templates, rng=None):
 
     ``cards`` are ``(guid, name, cost, attack, defense)`` rows and
     ``inventory_rewards`` are ``(template_guid, kind)`` pairs.  Campaign packs
-    and Crayburn promo chests are authored by template; booster treasure chests
-    award their set's chest loot (see ``services/chest_loot.py``), and chests
-    from sets without
-    chest loot fall back to the set booster trimmed to the chest rarity.
+    (``pack_loot_tables.json`` observed tables first, then
+    ``CAMPAIGN_PACK_CONFIGS``) and Crayburn promo chests are authored by
+    template; booster treasure chests award their set's chest loot (see
+    ``services/chest_loot.py``), and chests from sets without chest loot fall
+    back to the set booster trimmed to the chest rarity.  A chest none of
+    these cover logs a warning instead of opening empty silently.
     """
     rng = rng or random
-    pack_config = CAMPAIGN_PACK_CONFIGS.get((chest.template_guid or "").lower())
-    if pack_config:
-        from gamedata import DEFAULT_RECORD_STORE
-        reward = generate_campaign_pack(
-            card_templates, DEFAULT_RECORD_STORE, rng,
-            pack_config=pack_config)
+    template_guid = (chest.template_guid or "").lower()
+    loot_table = pack_loot_table(template_guid)
+    pack_config = CAMPAIGN_PACK_CONFIGS.get(template_guid)
+    if loot_table or pack_config:
+        if loot_table:
+            reward = generate_observed_pack(card_templates, loot_table, rng)
+        else:
+            from gamedata import DEFAULT_RECORD_STORE
+            reward = generate_campaign_pack(
+                card_templates, DEFAULT_RECORD_STORE, rng,
+                pack_config=pack_config)
         inventory_rewards = [(guid, "equipment")
                              for guid in reward.equipment_guids]
         inventory_rewards.extend(
@@ -645,6 +653,11 @@ def _generate_chest_rewards(chest, card_templates, rng=None):
         keep_count = _CHEST_KEEP_COUNTS.get(chest.chest_type, 3)
         if len(cards) > keep_count:
             cards = rng.sample(cards, keep_count)
+        if not cards:
+            log(f"WARNING: chest template {chest.template_guid or '-'} "
+                f"({chest.chest_type}, set {chest.set_guid or '-'}) has no "
+                "loot source (no pack table, campaign config, Crayburn seed "
+                "or set loot); it opens empty", "WARNING")
     return list(cards), []
 
 

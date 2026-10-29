@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import random
+from threading import Lock
+from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
 import json
@@ -227,6 +229,27 @@ def _eligible_az1_cards(card_data, record_store) -> dict[str, list[tuple]]:
     return _eligible_pve_cards(card_data, record_store, (AZ1_PVE_GUID,))
 
 
+def _roll_pvp_commons(card_data, pvp_set_guids, rng) -> list[tuple]:
+    """Draw the campaign pack's two distinct PvP commons."""
+    pvp_commons = [card
+                   for set_guid in pvp_set_guids
+                   for card in card_data.get(set_guid, ())
+                   if card[2] == "Common" and not card[6] and not card[7]]
+    if len(pvp_commons) < 2:
+        raise ValueError("campaign PvP common pool has fewer than two cards")
+    return rng.sample(pvp_commons, 2)
+
+
+def _stardust_weights(stardust_rarity_weights=None) -> dict[str, float]:
+    return {
+        rarity: weight
+        for rarity, weight in (
+            stardust_rarity_weights or DEFAULT_STARDUST_RARITY_WEIGHTS
+        ).items()
+        if rarity in AZ1_STARDUST_RARITIES
+    }
+
+
 def generate_campaign_pack(card_data, record_store, rng=None, *,
                            pack_config=AZ1_CAMPAIGN_PACK_CONFIG,
                            stardust_rarity_weights=None) -> AZ1PackReward:
@@ -235,13 +258,7 @@ def generate_campaign_pack(card_data, record_store, rng=None, *,
     pvp_set_guids = pack_config["pvp_set_guids"]
     pve_set_guids = pack_config["pve_set_guids"]
     equipment_set_guids = pack_config["equipment_set_guids"]
-    pvp_commons = [card
-                   for set_guid in pvp_set_guids
-                   for card in card_data.get(set_guid, ())
-                   if card[2] == "Common" and not card[6] and not card[7]]
-    if len(pvp_commons) < 2:
-        raise ValueError("campaign PvP common pool has fewer than two cards")
-    selected = rng.sample(pvp_commons, 2)
+    selected = _roll_pvp_commons(card_data, pvp_set_guids, rng)
 
     pve_by_rarity = _eligible_pve_cards(card_data, record_store, pve_set_guids)
     pve_rarity = _weighted_choice(AZ1_PVE_RARITY_WEIGHTS.items(), rng)
@@ -260,13 +277,7 @@ def generate_campaign_pack(card_data, record_store, rng=None, *,
             equipment_by_rarity.setdefault(rarity, []).append((record, 1.0))
     equipment_guids = []
     stardust_rarities = []
-    dust_weights = {
-        rarity: weight
-        for rarity, weight in (
-            stardust_rarity_weights or DEFAULT_STARDUST_RARITY_WEIGHTS
-        ).items()
-        if rarity in AZ1_STARDUST_RARITIES
-    }
+    dust_weights = _stardust_weights(stardust_rarity_weights)
     for _ in range(2):
         slot_type = _weighted_choice(AZ1_EQUIPMENT_SLOT_WEIGHTS.items(), rng)
         if slot_type == "Stardust":
@@ -304,6 +315,109 @@ def generate_az2_pack(card_data, record_store, rng=None,
         pack_config=AZ2_CAMPAIGN_PACK_CONFIG,
         stardust_rarity_weights=stardust_rarity_weights,
     )
+
+
+PACK_LOOT_TABLES_PATH = Path(__file__).resolve().parent / "pack_loot_tables.json"
+
+
+@dataclass(frozen=True)
+class LootEntry:
+    name: str
+    guid: str
+    rarity: str
+    weight: float
+    unique: bool = False
+
+
+@dataclass(frozen=True)
+class PackLootTable:
+    """Observed loot of one AZ1 pack (see ``pack_loot_tables.json``)."""
+    chest_guid: str
+    name: str
+    pve_cards: tuple[LootEntry, ...]
+    equipment: tuple[LootEntry, ...]
+
+
+def _parse_pack_loot_tables(data) -> Mapping[str, PackLootTable]:
+    tables = {}
+    for chest_guid, pack in (data.get("packs") or {}).items():
+        def entries(key):
+            return tuple(
+                LootEntry(str(e["name"]), str(e["guid"]).lower(),
+                          str(e.get("rarity", "")), float(e["weight"]),
+                          bool(e.get("unique", False)))
+                for e in pack.get(key, ()) if float(e.get("weight", 0)) > 0)
+        guid = str(chest_guid).lower()
+        tables[guid] = PackLootTable(guid, str(pack.get("name", "")),
+                                     entries("pve_cards"), entries("equipment"))
+    return MappingProxyType(tables)
+
+
+_PACK_LOOT_TABLES_LOCK = Lock()
+_PACK_LOOT_TABLES: Mapping[str, PackLootTable] | None = None
+
+
+def load_pack_loot_tables(path=None) -> Mapping[str, PackLootTable]:
+    """Return the observed pack loot tables keyed by chest template GUID.
+
+    The default file is parsed once under a lock and shared read-only (frozen
+    dataclasses in a ``MappingProxyType``) by every handler thread.
+    """
+    global _PACK_LOOT_TABLES
+    if path is not None:
+        with open(path, encoding="utf-8") as stream:
+            return _parse_pack_loot_tables(json.load(stream))
+    with _PACK_LOOT_TABLES_LOCK:
+        if _PACK_LOOT_TABLES is None:
+            try:
+                with open(PACK_LOOT_TABLES_PATH, encoding="utf-8") as stream:
+                    data = json.load(stream)
+            except FileNotFoundError:
+                data = {}
+            _PACK_LOOT_TABLES = _parse_pack_loot_tables(data)
+        return _PACK_LOOT_TABLES
+
+
+def pack_loot_table(chest_guid) -> PackLootTable | None:
+    return load_pack_loot_tables().get(str(chest_guid or "").lower())
+
+
+def generate_observed_pack(card_data, table: PackLootTable, rng=None, *,
+                           pvp_set_guids=PVP_COMMON_SET_GUIDS,
+                           stardust_rarity_weights=None) -> AZ1PackReward:
+    """Generate an AZ1 pack from its observed loot table.
+
+    Same product as the AZ1 recipe: two PvP commons, one PvE card (weighted
+    by the observed drop rates) and two equipment slots (weighted by the
+    observed equipment rates), each slot replaced by Stardust at
+    ``STARDUST_REPLACEMENT_RATE``.
+    """
+    rng = rng or random
+    if not table.pve_cards or not table.equipment:
+        raise ValueError("pack loot table " + table.name + " is incomplete")
+    selected = _roll_pvp_commons(card_data, pvp_set_guids, rng)
+    pve_guid = _weighted_choice(
+        ((entry.guid, entry.weight) for entry in table.pve_cards), rng)
+    pve_card = next((card for cards in card_data.values() for card in cards
+                     if card[0].lower() == pve_guid), None)
+    if pve_card is None:
+        raise ValueError("pack loot table " + table.name
+                         + " names a missing card template " + pve_guid)
+    selected.append(pve_card)
+
+    equipment_guids = []
+    stardust_rarities = []
+    dust_weights = _stardust_weights(stardust_rarity_weights)
+    for _ in range(2):
+        if rng.random() < STARDUST_REPLACEMENT_RATE:
+            stardust_rarities.append(_weighted_choice(dust_weights.items(), rng))
+        else:
+            equipment_guids.append(_weighted_choice(
+                ((entry.guid, entry.weight) for entry in table.equipment), rng))
+    cards = tuple((card[0], card[1], card[3], card[4], card[5])
+                  for card in selected)
+    return AZ1PackReward(cards, tuple(equipment_guids),
+                         tuple(stardust_rarities))
 
 
 def az1_probability_summary() -> dict[str, dict[str, float]]:
