@@ -2,13 +2,31 @@
   "_comment": "Per-run payouts of the generic dungeon runner. 'battles' is indexed by the order in which a run's battles are won (1st win, 2nd win, ...; the last entry repeats), 'boss' is the finale room's battle, which also grants the dungeon's pack from 'packs' (DungeonTemplate name -> chest template GUID). A dungeon entry may override 'battles'/'boss'. Castle Crayburn has its own runner and is not affected.",
   "_default": {
     "battles": [
-      {"gold": 75, "xp": 100},
-      {"gold": 75, "xp": 150},
-      {"gold": 125, "xp": 175},
-      {"gold": 125, "xp": 200},
-      {"gold": 150, "xp": 250}
+      {
+        "gold": 75,
+        "xp": 100
+      },
+      {
+        "gold": 75,
+        "xp": 150
+      },
+      {
+        "gold": 125,
+        "xp": 175
+      },
+      {
+        "gold": 125,
+        "xp": 200
+      },
+      {
+        "gold": 150,
+        "xp": 250
+      }
     ],
-    "boss": {"gold": 200, "xp": 350}
+    "boss": {
+      "gold": 200,
+      "xp": 350
+    }
   },
   "packs": {
     "The Tranquil Dream": "88d29ef0-5ec7-49b1-bcc5-8f70c5c4cda5",
@@ -20,5 +38,34 @@
     "Great Machine Graveyard": "8c775986-e01c-4f90-960f-5a6367480962",
     "Ruins of Kukatan": "92a5201c-168c-482c-ac69-5d7d710af6d2",
     "The Kraken": "ff8aa8df-d962-4bce-8db0-82aea74b3088"
+  },
+  "The Tranquil Dream": {
+    "_source": "Gold/XP per win order and boss from the HEX Revival progression notes (videos): github.com/Theveninm/Hex-shard-of-fates-revival docs/PROGRESSION.md",
+    "battles": [
+      {
+        "gold": 75,
+        "xp": 100
+      },
+      {
+        "gold": 125,
+        "xp": 150
+      },
+      {
+        "gold": 250,
+        "xp": 175
+      },
+      {
+        "gold": 250,
+        "xp": 200
+      },
+      {
+        "gold": 300,
+        "xp": 250
+      }
+    ],
+    "boss": {
+      "gold": 450,
+      "xp": 350
+    }
   }
 }

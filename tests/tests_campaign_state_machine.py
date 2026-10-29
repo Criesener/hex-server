@@ -2482,7 +2482,7 @@ def test_tranquil_dream_pays_by_win_order_and_boss():
         rooms = {room["title"]: room for room in state["DungeonRun"]["rooms"]}
         order = ("Dream Spider", "Dream Eagle", "Dream Bear", "Dream Turtle",
                  "Dream Skarn")
-        expected = ((75, 100), (75, 150), (125, 175), (125, 200), (150, 250))
+        expected = ((75, 100), (125, 150), (250, 175), (250, 200), (300, 250))
         for index, (title, (gold, xp)) in enumerate(zip(order, expected)):
             scene = rooms[title]["stages"][0]["encounter"]
             session = SimpleNamespace(session_id=100 + index)
@@ -2496,7 +2496,7 @@ def test_tranquil_dream_pays_by_win_order_and_boss():
         boss = rooms["Sister Midnight"]["stages"][0]["encounter"]
         records = campaign._dungeon_run_reward_records(
             state, boss, SimpleNamespace(session_id=200))
-        assert records == [{"gold": 200, "xp": 350, "one_time": False,
+        assert records == [{"gold": 450, "xp": 350, "one_time": False,
                             "chest_guid": "88d29ef0-5ec7-49b1-bcc5-8f70c5c4cda5"}], records
         # Every generic dungeon shares the tiers; its boss grants its pack.
         usurper = campaign._dungeon_reward_schedule("The Usurper")
