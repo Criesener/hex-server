@@ -86,7 +86,7 @@ def test_issue_command_is_available_without_debug_console():
                 result = commands.handle_command(
                     HandlerStub(), "!issue Client crash", "", "")
         assert result.startswith("Click the link below to open")
-        assert "[url=HTTPS://github.com/IanUtley/hex-server/issues/new?" in result
+        assert "[url=HTTPS://github.com/Criesener/hex-server/issues/new?" in result
         issue_url = result.split("[url=", 1)[1].split("]", 1)[0]
         query = parse_qs(urlparse(issue_url).query)
         assert query["title"] == [
@@ -94,6 +94,23 @@ def test_issue_command_is_available_without_debug_console():
         assert "RulesPort trigger error: test failure" in query["body"][0]
     finally:
         commands.hconnect_server.PROFILE_FEATURE_FLAGS = old_flags
+
+
+def test_issue_repo_is_configurable():
+    """!issue targets Criesener/hex-server unless HEX_ISSUE_REPO names
+    another owner/repo; a malformed value falls back to the default."""
+    import os
+    from unittest import mock
+    with mock.patch.dict(os.environ, {"HEX_ISSUE_REPO": "Someone/fork"}):
+        assert commands._github_issue_new_url() == \
+            "HTTPS://github.com/Someone/fork/issues/new"
+    with mock.patch.dict(os.environ, {"HEX_ISSUE_REPO": "evil.com/x/y?z"}):
+        assert commands._github_issue_new_url() == \
+            "HTTPS://github.com/Criesener/hex-server/issues/new"
+    with mock.patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("HEX_ISSUE_REPO", None)
+        assert commands._github_issue_new_url() == \
+            "HTTPS://github.com/Criesener/hex-server/issues/new"
 
 
 def test_session_logger_writes_bound_session_file():
@@ -304,6 +321,7 @@ def test_threshold_command_reports_delta_from_previous_value():
 
 if __name__ == "__main__":
     test_issue_command_is_available_without_debug_console()
+    test_issue_repo_is_configurable()
     test_session_logger_writes_bound_session_file()
     test_issue_report_combines_player_and_latest_game_logs()
     test_issue_command_reports_session_state_and_tail()

@@ -466,7 +466,20 @@ def _error_report(handler):
             f"{_chat_safe_error_message(message)}")
 
 
-_GITHUB_ISSUE_URL = "HTTPS://github.com/IanUtley/hex-server/issues/new"
+# Repository that receives !issue reports.  HEX_ISSUE_REPO ("owner/repo")
+# lets another fork point the command at its own tracker.
+_DEFAULT_ISSUE_REPO = "Criesener/hex-server"
+_ISSUE_REPO_RE = _re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def _github_issue_new_url():
+    """The ``issues/new`` form of the configured GitHub repository."""
+    repo = _os.environ.get("HEX_ISSUE_REPO", "").strip()
+    if not _ISSUE_REPO_RE.match(repo):
+        repo = _DEFAULT_ISSUE_REPO
+    return f"HTTPS://github.com/{repo}/issues/new"
+
+
 # Keep the generated link below common browser/proxy request-line limits. The
 # report is still bounded by _error_report; this only truncates unusually long
 # tails after the complete URL has been assembled and measured.
@@ -486,7 +499,7 @@ def _github_issue_url(title, report):
         safe_report = str(report_text).replace("```", "``\u200b`")
         body = body_prefix + safe_report + body_suffix
         query = _urlencode({"title": title, "body": body})
-        return f"{_GITHUB_ISSUE_URL}?{query}"
+        return f"{_github_issue_new_url()}?{query}"
 
     issue_url = build(report)
     if len(issue_url) <= _GITHUB_ISSUE_URL_LIMIT:
