@@ -1,0 +1,14 @@
+{
+  "_comment": "AZ1 map nodes that SceneData splits into faction variants (issue #34). The client prefab campaign/az01/nodes has only the canonical node (Node023, Node026) and its paths; the variants (Node023A/B, Node026A/B) are not map nodes. The server sends one location on the canonical node; 'by_faction' names the variant whose SceneData text and NODE scene the champion's faction plays. The client data has no explicit link, so the mapping follows the authored content: the Node 23 ARDENT intro and its Success texts are about the necrotic (023B 'a group of necrotic ... overwhelmed', scenes 23B/23B_2 NECROTIC), the UNDERWORLD ones about the humans (023A, scenes 23A/23A_2 HUMANS); the Node 26 'Ardent player' conversations name the Brood Creeper (the AI champion of scene 26B WAYWARD VENNEN, SceneData 026B), the 'Underworld player' ones the Furious Taskmaster (the AI champion of scene 26 WAYWARD ORCS, SceneData 026A). A variant without its own scene falls back to the canonical NODE scene (026A -> NODE 26). 'choices' maps an intro answer's ServerScriptEvent (sent as a campaign sendevent) to the battle scene suffix (23B + '_2' -> NODE 23B_2 ... NO HELP) and to the label of the matching Success conversation; 'default_choice' applies until an answer was recorded.",
+  "Node023": {
+    "by_faction": {"Ardent": "Node023B", "Underworld": "Node023A"},
+    "choices": {
+      "choice_Help": {"scene_suffix": "", "success_label": "chose to help"},
+      "choice_NoHelp": {"scene_suffix": "_2", "success_label": "chose NOT to help"}
+    },
+    "default_choice": "choice_Help"
+  },
+  "Node026": {
+    "by_faction": {"Ardent": "Node026B", "Underworld": "Node026A"}
+  }
+}

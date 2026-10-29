@@ -1093,6 +1093,11 @@ def _activate_az1_area(db, champ_id):
             cid, lo, champ_id, user_id, champ_name, "AZ1", "AREA", "{}",
             db, is_started=True)
     previous_state = state if row and isinstance(state, dict) else {}
+    if previous_state.get("VisLocs"):
+        # Older saves hold faction-variant locations (Node023A/B); their
+        # progress belongs to the canonical node the fresh scene builds.
+        _az1_merge_variant_locations(
+            db, previous_state["VisLocs"], previous_state, champ_id)
     previous_locations = {
         (item.get("Data") or {}).get("node"): item.get("Data") or {}
         for item in previous_state.get("VisLocs", [])
@@ -1437,6 +1442,212 @@ def _az1_scene_for_node(db, node):
         if match and node_key(match.group(1)) == wanted:
             return row
     return None
+
+
+_AZ1_NODE_VARIANTS_PATH = (Path(__file__).resolve().parent /
+                           "az1_node_variants.json")
+_AZ1_NODE_LIST_KEYS = ("visited_nodes", "blocked_nodes", "unlocked_nodes",
+                       "quest_nodes", "quest_reveal_nodes",
+                       "quest_hidden_nodes", "failed_nodes")
+_AZ1_NODE_COUNT_KEYS = ("conversation_visits", "conversation_steps")
+
+
+def _az1_node_variant_rules():
+    """``{canonical node: rules}`` of the faction-split AZ1 map nodes.
+
+    SceneData authors some locations as faction variants (Node023A/B) of a
+    client map node (Node023) that the prefab has only once; see
+    az1_node_variants.json.  The file is read on every call, so there is no
+    shared cache to guard.
+    """
+    try:
+        data = json.loads(_AZ1_NODE_VARIANTS_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+    return {str(node): rules for node, rules in data.items()
+            if not str(node).startswith("_") and isinstance(rules, dict)}
+
+
+def _az1_variant_canonical(rules=None):
+    """``{variant node: canonical node}`` for every authored variant."""
+    rules = _az1_node_variant_rules() if rules is None else rules
+    return {str(variant): node for node, rule in rules.items()
+            for variant in (rule.get("by_faction") or {}).values() if variant}
+
+
+def _az1_faction_variant(rule, faction):
+    """The variant node a faction plays on a split node."""
+    by_faction = {str(key).lower(): value
+                  for key, value in (rule.get("by_faction") or {}).items()}
+    return by_faction.get(str(faction or "").lower())
+
+
+def _az1_node_choice(rule, state, node):
+    """``(event, choice rules)`` recorded for a split node's intro answer."""
+    choices = rule.get("choices") or {}
+    if not choices:
+        return None, {}
+    pdata = (((state or {}).get("PublicState") or {}).get("Data") or {})
+    event = (pdata.get("node_choices") or {}).get(str(node))
+    if event not in choices:
+        event = rule.get("default_choice")
+    return event, choices.get(event) or {}
+
+
+def _az1_choice_node(state, event_name):
+    """The active split node whose intro answer fires *event_name*, if any."""
+    if not isinstance(state, dict) or not event_name:
+        return None
+    node = _resolve_node(
+        state, str(state.get("ALoc") or state.get("LastNode") or ""))
+    rule = _az1_node_variant_rules().get(str(node or ""))
+    if rule and event_name in (rule.get("choices") or {}):
+        return str(node)
+    return None
+
+
+def _az1_location_scene(db, node, state=None, champ_id=None):
+    """Resolve the authored scene a champion plays at an AZ1 map node.
+
+    A faction-split node plays its faction variant's scene, and the intro
+    answer recorded for it selects the scene suffix (NODE 23B -> 23B_2).  A
+    variant without a scene of its own falls back to the canonical NODE
+    scene (Node026A -> NODE 26).  Every other node is ``_az1_scene_for_node``.
+    """
+    rule = _az1_node_variant_rules().get(str(node or ""))
+    if rule and champ_id is not None:
+        variant = _az1_faction_variant(
+            rule, _quest_faction_for_champion(db, champ_id))
+        if variant:
+            _event, choice = _az1_node_choice(rule, state, node)
+            for key in (variant + str(choice.get("scene_suffix") or ""),
+                        variant):
+                scene = _az1_scene_for_node(db, key)
+                if scene:
+                    return scene
+    return _az1_scene_for_node(db, node)
+
+
+def _az1_merge_variant_items(items, faction):
+    """Give each faction-split node one SceneData item on its map node.
+
+    The champion's faction variant supplies the title and descriptions; the
+    other variant is dropped, so no location is built for a node the client
+    prefab does not have.
+    """
+    rules = _az1_node_variant_rules()
+    canonical = _az1_variant_canonical(rules)
+    by_node = {str(item.get("m_MapNodeId") or ""): item for item in items}
+    merged, placed = [], set()
+    for item in items:
+        target = canonical.get(str(item.get("m_MapNodeId") or ""))
+        if target is None:
+            merged.append(item)
+            continue
+        if target in placed or target in by_node:
+            continue
+        chosen = by_node.get(_az1_faction_variant(rules[target], faction),
+                             item)
+        merged.append(dict(chosen, m_MapNodeId=target))
+        placed.add(target)
+    return merged
+
+
+def _az1_merge_variant_locations(db, locations, state=None, champ_id=None):
+    """Rewrite stale faction-variant locations onto their canonical node.
+
+    Saves created before issue #34 hold Node023A/B and Node026A/B, which the
+    client map cannot place.  Replace them by one canonical location (keeping
+    the champion's variant, or a completed one) and carry a won/completed
+    result over; LocNodes and the persisted node lists follow.
+    """
+    rules = _az1_node_variant_rules()
+    canonical = _az1_variant_canonical(rules)
+    if not canonical:
+        return False
+    faction = (_quest_faction_for_champion(db, champ_id)
+               if champ_id is not None else None)
+    changed = False
+    for target, rule in rules.items():
+        variants = [loc for loc in (locations or [])
+                    if canonical.get(str((loc.get("Data") or {}).get("node")
+                                         or "")) == target]
+        if not variants:
+            continue
+        own = next((loc for loc in locations
+                    if (loc.get("Data") or {}).get("node") == target), None)
+        if own is None:
+            wanted = _az1_faction_variant(rule, faction)
+            source = (next((loc for loc in variants
+                            if (loc.get("Data") or {}).get("completed")),
+                           None) or
+                      next((loc for loc in variants
+                            if (loc.get("Data") or {}).get("node") == wanted),
+                           None) or variants[0])
+            own = dict(source)
+            own["Data"] = dict(source.get("Data") or {}, node=target)
+            # The canonical location takes the first variant's list slot.
+            locations[:] = [own if loc is variants[0] else loc
+                            for loc in locations]
+        data = own["Data"]
+        for loc in variants:
+            old = loc.get("Data") or {}
+            for field in ("completed", "pre_encounter_completed"):
+                if old.get(field):
+                    data[field] = True
+        locations[:] = [loc for loc in locations
+                        if not any(loc is variant for variant in variants)]
+        changed = True
+    if state is None:
+        return changed
+    nodes = state.get("LocNodes")
+    if isinstance(nodes, list):
+        rewritten, seen = [], set()
+        for item in nodes:
+            name = str(item.get("Name") or
+                       (item.get("Data") or {}).get("id") or "")
+            target = canonical.get(name)
+            if target:
+                item = {"Name": target, "Data": dict(
+                    item.get("Data") or {}, id=target)}
+                name = target
+                changed = True
+            if name in seen:
+                continue
+            seen.add(name)
+            rewritten.append(item)
+        nodes[:] = rewritten
+    pdata = (state.get("PublicState") or {}).get("Data")
+    if isinstance(pdata, dict):
+        for key in _AZ1_NODE_LIST_KEYS:
+            values = pdata.get(key)
+            if not isinstance(values, list):
+                continue
+            mapped = []
+            for value in values:
+                value = canonical.get(str(value), value)
+                if value not in mapped:
+                    mapped.append(value)
+            if mapped != values:
+                pdata[key] = mapped
+                changed = True
+        for key in _AZ1_NODE_COUNT_KEYS:
+            counts = pdata.get(key)
+            if not isinstance(counts, dict):
+                continue
+            for variant in [name for name in counts if name in canonical]:
+                target = canonical[variant]
+                try:
+                    counts[target] = max(int(counts.get(target, 0) or 0),
+                                         int(counts.pop(variant) or 0))
+                except (TypeError, ValueError):
+                    counts.setdefault(target, 0)
+                changed = True
+    for key in ("LastNode", "ALoc"):
+        if str(state.get(key) or "") in canonical:
+            state[key] = canonical[str(state[key])]
+            changed = True
+    return changed
 
 
 def _normalize_az1_panorama_location(db, data):
@@ -1825,8 +2036,12 @@ def _az1_pre_encounter_conversation(db, node, champ_id=None):
     return scored[0][1]
 
 
-def _az1_outcome_conversation(db, node, won, champ_id=None):
-    """Select an authored encounter result conversation for an AZ1 node."""
+def _az1_outcome_conversation(db, node, won, champ_id=None, state=None):
+    """Select an authored encounter result conversation for an AZ1 node.
+
+    On a faction-split node with an intro choice, a Success row is picked by
+    the recorded answer's label ("Player chose NOT to help necrotic").
+    """
     outcome = "success" if won else "fail"
     rows = [
         row for row in _az1_node_conversation_rows(db, node)
@@ -1840,6 +2055,14 @@ def _az1_outcome_conversation(db, node, won, champ_id=None):
                         if _conversation_matches_faction(row[3], faction)]
         if faction_rows:
             rows = faction_rows
+    rule = _az1_node_variant_rules().get(str(node or ""))
+    if rule and won:
+        _event, choice = _az1_node_choice(rule, state, node)
+        wanted = str(choice.get("success_label") or "").lower()
+        chosen = [row for row in rows if wanted and wanted in
+                  str(row[1].get("label") or row[3] or "").lower()]
+        if chosen:
+            rows = chosen
     return rows[0][0]
 
 
@@ -1935,6 +2158,7 @@ def _hydrate_az1_area_scene_metadata(db, locations, champ_id=None, state=None):
     every response repairs those states and, importantly, makes a DIALOG scene
     (such as Node007's Gaal Camp) a conversation instead of a Shroom Haus.
     """
+    _az1_merge_variant_locations(db, locations, state, champ_id)
     if state is not None:
         _az1_append_path_forks(
             db, locations, state.setdefault("LocNodes", []))
@@ -1947,7 +2171,7 @@ def _hydrate_az1_area_scene_metadata(db, locations, champ_id=None, state=None):
     for loc in locations or []:
         data = loc.get("Data") or {}
         node = data.get("node") or ""
-        scene = _az1_scene_for_node(db, node)
+        scene = _az1_location_scene(db, node, state, champ_id)
         if not scene:
             # Not every authored conversation has an accompanying encounter
             # scene.  Vale of Oberon, for example, is a conversation-only
@@ -2190,6 +2414,19 @@ def _hydrate_az1_area_scene_metadata(db, locations, champ_id=None, state=None):
     if champ_id is not None and state is not None:
         _sync_az1_quest_gates(db, champ_id, state)
         _apply_az1_quest_markers(db, champ_id, state)
+    if state is not None and isinstance(state.get("Encounters"), list):
+        # The client resolves Location.Encounter through this catalog.  A
+        # location's scene can change after the map was built (an intro
+        # answer picks NODE 23B_2, a migrated save gains Node026's scene).
+        catalog = {item.get("Name") for item in state["Encounters"]}
+        for loc in locations or []:
+            data = loc.get("Data") or {}
+            guid = data.get("encounter")
+            if ((data.get("type") == "Encounter" or
+                 data.get("pre_encounter")) and guid and guid not in catalog):
+                state["Encounters"].append(
+                    {"Name": guid, "Data": {"encscene": guid}})
+                catalog.add(guid)
     _guard_deckless_encounters(db, locations, state)
 
 
@@ -2275,6 +2512,9 @@ def _az1_area_scene_state(champion_race=None, rewards_json=None, db=None):
         items = [{"m_MapNodeId": "Node001", "m_Name": "001 - Into the Woods",
                   "m_Title": "Into The Woods", "m_Descriptions": [],
                   "m_TotemType": "None"}]
+    # The client prefab has one node per faction-split location (issue #34).
+    items = _az1_merge_variant_items(
+        items, _RACE_FACTIONS.get(champion_race, "Ardent"))
     locs, nodes = [], []
     for i, item in enumerate(items):
         node = item.get("m_MapNodeId") or f"Node{i+1:03d}"
@@ -2570,63 +2810,40 @@ def _az1_reveal_neighbors(db, state, current_node=None):
     }
     # Brink Ridge's opening conversation explains that the northern road is
     # closed by a blockade.  The authored graph stores those destinations as
-    # Node021, Node023, and Node077; the client map represents Node023 as its
-    # two authored variants, Node023A/Node023B.  Keep the connections hidden
-    # until a successful Brink Ridge encounter explicitly clears the blockade;
-    # merely closing its explanatory conversation is not enough.
+    # Node021, Node023, and Node077, which are also the client prefab nodes
+    # (Node023's faction variants share its one location, issue #34).  Keep
+    # the connections hidden until a successful Brink Ridge encounter
+    # explicitly clears the blockade; merely closing its explanatory
+    # conversation is not enough.
     blockade_data = next(
         ((loc.get("Data") or {}) for loc in state.get("VisLocs", [])
          if (loc.get("Data") or {}).get("node") == "Node019"),
         None,
     )
     blockade_cleared = bool(pdata.get("blockade_cleared"))
-    if blockade_data is not None and not blockade_cleared:
+    if blockade_data is not None:
         northbound = {
             str(node) for node in _az1_neighbors(db, "Node019")
             if str(node) != "Node016"
         }
+    if blockade_data is not None and not blockade_cleared:
         blocked.update(northbound)
-        for loc in state.get("VisLocs", []):
-            node = str((loc.get("Data") or {}).get("node") or "")
-            if node in northbound or ("Node023" in northbound and
-                                      node.startswith("Node023")):
-                forced_hidden.add(node)
-                # Persist the concrete client node IDs as well as the
-                # canonical graph ID so stale visit_node requests cannot
-                # bypass the blockade after the conversation closes.
-                if node not in blocked:
-                    blocked.add(node)
+        forced_hidden.update(northbound)
+        # Persist the gate so stale visit_node requests cannot bypass the
+        # blockade after the conversation closes.
         blocked_values = [str(value) for value in (pdata.get("blocked_nodes") or [])
                           if value]
-        for node in blocked:
+        for node in sorted(blocked):
             if node not in blocked_values:
                 blocked_values.append(node)
         pdata["blocked_nodes"] = blocked_values
     elif blockade_data is not None:
-        northbound = {
-            str(node) for node in _az1_neighbors(db, "Node019")
-            if str(node) != "Node016"
-        }
-        blocked = {
-            value for value in blocked
-            if value not in northbound and not (
-                "Node023" in northbound and str(value).startswith("Node023"))
-        }
+        blocked = {value for value in blocked if value not in northbound}
         pdata["blocked_nodes"] = [
             str(value) for value in (pdata.get("blocked_nodes") or [])
-            if str(value) not in northbound and not (
-                "Node023" in northbound and str(value).startswith("Node023"))
+            if str(value) not in northbound
         ]
     path_forks = _az1_path_fork_ids(db)
-
-    def _node_set_contains(values, node):
-        if node in values:
-            return True
-        # Node023 is represented by two authored client locations in the
-        # current map data, so a canonical Node023 gate/reveal applies to
-        # both variants.
-        return ("Node023" in values and
-                str(node or "").startswith("Node023"))
 
     for loc in state.get("VisLocs", []):
         data = loc.get("Data") or {}
@@ -2636,15 +2853,13 @@ def _az1_reveal_neighbors(db, state, current_node=None):
         # A quest gate can hide an authored neighbour even when the static
         # map graph says it is adjacent.  A previously visited node remains
         # visible so reconnects never erase discovered map space.
-        known = (node in path_forks or _node_set_contains(visited, node) or
+        known = (node in path_forks or node in visited or
                  bool(data.get("completed")) or
-                 _node_set_contains(reveal, node) or
-                 _node_set_contains(forced_visible, node))
-        if (_node_set_contains(blocked, node) and
-                not _node_set_contains(visited, node) and
+                 node in reveal or node in forced_visible)
+        if (node in blocked and node not in visited and
                 node not in path_forks):
             known = False
-        if _node_set_contains(forced_hidden, node) and node not in path_forks:
+        if node in forced_hidden and node not in path_forks:
             known = False
         data["visible"] = known
         data["enabled"] = False if node in path_forks else known
@@ -3250,7 +3465,7 @@ def _apply_az1_quest_markers(db, champ_id, state):
         # Dialogue-backed encounter nodes intentionally omit the encounter
         # field from the client location to avoid opening the champion panel.
         # The authored node scene remains the objective link.
-        scene = _az1_scene_for_node(db, node)
+        scene = _az1_location_scene(db, node, state, champ_id)
         if scene and scene[0]:
             encounter_nodes.setdefault(str(scene[0]), set()).add(str(node))
         conversation = data.get("conversationId")
@@ -6032,6 +6247,19 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
         state.setdefault("PublicState", {}).setdefault("Data", {})[
             "RaceTutorialBattleUnlocked"
         ] = False
+    elif ((ctype or "").upper() == "AREA" and
+          str(template_name or "").upper() == "AZ1" and
+          _az1_choice_node(state, event_name)):
+        # An intro answer of a faction-split node (Saramago Crater's help /
+        # no-help) arrives as its ServerScriptEvent before conv_done.  Record
+        # it and rebind the node's battle to the chosen scene; the Success
+        # conversation follows from the same record (issue #34).
+        node = _az1_choice_node(state, event_name)
+        pdata = state.setdefault("PublicState", {}).setdefault("Data", {})
+        pdata.setdefault("node_choices", {})[node] = event_name
+        _hydrate_az1_area_scene_metadata(
+            db, state.get("VisLocs", []), champ_id=champ_id, state=state)
+        log(f"    Campaign AZ1 choice: node={node} event={event_name}")
     elif event_name == "visit_path":
         # The map client reports the authored path identifier separately from
         # StartLoc. Persist it so travelled paths remain lit after refresh.
@@ -6522,7 +6750,8 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
                     state["ALoc"] = (current_data.get("name") or
                                       current_data.get("node") or current)
                 elif current_data.get("pre_encounter") and outcome_convo:
-                    scene = _az1_scene_for_node(db, current_data.get("node"))
+                    scene = _az1_location_scene(
+                        db, current_data.get("node"), state, champ_id)
                     current_data.update({
                         "type": "Encounter",
                         "conversationId": None,
@@ -6997,7 +7226,8 @@ def _apply_gameend(db, camp_id, won):
             outcome_conv = None
             if not won or not retryable:
                 outcome_conv = _az1_outcome_conversation(
-                    db, result_node, bool(won), champ_id=champ_id)
+                    db, result_node, bool(won), champ_id=champ_id,
+                    state=state)
             if outcome_conv and matched_index is not None:
                 result_data = state.get("VisLocs", [])[matched_index].get(
                     "Data", {})

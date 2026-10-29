@@ -135,10 +135,12 @@ def test_area_gameend_keeps_the_hero_on_the_encounter_node():
         area_id, state = area_state(db)
         # The first AZ1 "Encounter" used to be the deck-less Usurper
         # entrance (now a Dungeon portal, issue #31).  Pick a battle that is
-        # the first location with its name, so ALoc names exactly that node.
+        # the first location with its name, so ALoc names exactly that node
+        # (a battle behind its prelude conversation counts as well).
         names = [loc["Data"].get("name") for loc in state["VisLocs"]]
         encounter = next(loc["Data"] for index, loc in enumerate(state["VisLocs"])
-                         if loc["Data"].get("type") == "Encounter"
+                         if (loc["Data"].get("type") == "Encounter" or
+                             loc["Data"].get("pre_encounter"))
                          and str(loc["Data"].get("node", "")).startswith("Node")
                          and names.index(loc["Data"].get("name")) == index)
         state["ALoc"] = encounter.get("name") or encounter["node"]
@@ -2597,22 +2599,198 @@ def test_leaving_a_dungeon_returns_to_its_entrance():
         os.unlink(path)
 
 
+# Issue #34: the faction scenes behind Saramago Crater and Johannes Bog.
+SPLIT_NODE_SCENES = {
+    "Ardent": {"choice_Help": "NODE 23B - NECROTIC CHOICE HELP",
+               "choice_NoHelp": "NODE 23B_2 - NECROTIC NO HELP",
+               "Node026": "NODE 26B - WAYWARD VENNEN"},
+    "Underworld": {"choice_Help": "NODE 23A - HUMANS CHOICE HELP",
+                   "choice_NoHelp": "NODE 23A_2 - HUMANS NO HELP",
+                   "Node026": "NODE 26 - WAYWARD ORCS"},
+}
+SPLIT_NODE_SUCCESS = {
+    ("Ardent", "choice_Help"): "ARDENT Success - Player chose to help necrotic",
+    ("Ardent", "choice_NoHelp"):
+        "ARDENT Success - Player chose NOT to help necrotic",
+    ("Underworld", "choice_Help"):
+        "UNDERWORLD Success - Player chose to help humans",
+    ("Underworld", "choice_NoHelp"):
+        "UNDERWORLD Success - Player chose NOT to help humans",
+}
+SPLIT_VARIANTS = {"Node023A", "Node023B", "Node026A", "Node026B"}
+
+
+def _scene_name(db, guid):
+    row = campaign.pve_db.db_encounter_scene_runtime(guid, db)
+    return str(row[1]) if row else None
+
+
+def _split_node_location(state, node):
+    return next(loc["Data"] for loc in state["VisLocs"]
+                if loc["Data"]["node"] == node)
+
+
+def _play_split_node(db, driver, camp_id, node, faction, choice=None):
+    """Enter *node*, answer its intro, win its battle, close the Success."""
+    import campaign_map_check as check
+    names = _conversation_names()
+    state = check._load_state(db, camp_id)
+    data = _split_node_location(state, node)
+    assert data["visible"] and data["enabled"], data
+    driver.visit_node(camp_id, node)
+    driver.startloc(camp_id, data["name"])
+    state = check._load_state(db, camp_id)
+    data = _split_node_location(state, node)
+    assert state["ALoc"] == data["name"], state["ALoc"]
+    assert data["type"] == "Convo" and data.get("pre_encounter"), data
+    intro = names[data["conversationId"]]
+    assert faction.lower() in intro.lower() and "success" not in \
+        intro.lower(), intro
+    scene_key = choice or node
+    if choice:
+        driver.event(camp_id, choice)
+    driver.event(camp_id, "conv_done")
+    state = check._load_state(db, camp_id)
+    data = _split_node_location(state, node)
+    assert data["type"] == "Encounter", data
+    assert _scene_name(db, data["encounter"]).endswith(
+        SPLIT_NODE_SCENES[faction][scene_key]), _scene_name(
+            db, data["encounter"])
+    assert data["encounter"] in {item["Name"] for item in state["Encounters"]}
+    _response, pushes, _error = driver.event(camp_id, "start")
+    assert any(push.get("RequestType") == "gamestarted" for push in pushes)
+    assert check._load_state(db, camp_id)["ActiveEncounterGuid"] == \
+        data["encounter"]
+    campaign._apply_gameend(db, camp_id, True)
+    state = check._load_state(db, camp_id)
+    data = _split_node_location(state, node)
+    success = names[data["conversationId"]]
+    assert data["type"] == "Convo" and data["outcome_conversation"], data
+    if choice:
+        assert success.endswith(SPLIT_NODE_SUCCESS[(faction, choice)]), success
+    else:
+        assert success.lower().endswith(f"{faction.lower()} player success"), \
+            success
+    driver.event(camp_id, "conv_done")
+    state = check._load_state(db, camp_id)
+    data = _split_node_location(state, node)
+    assert data["completed"] and state["ALoc"] is None, data
+    assert not check.state_problems(db, state, "AZ1").get(node)
+    return state
+
+
+def test_saramago_crater_and_johannes_bog_play_by_faction_and_choice():
+    """Issue #34: the faction-split nodes are one location on the client's
+    map node; the faction picks the intro and battle, Saramago Crater's
+    help / no-help answer picks its battle and Success conversation."""
+    import campaign_map_check as check
+    db, path = cloned_db()
+    try:
+        for champion_id, faction in ((6, "Ardent"), (4, "Underworld")):
+            assert campaign._quest_faction_for_champion(
+                db, champion_id) == faction
+            area_id, state = area_state(db, champion_id)
+            nodes = {loc["Data"]["node"] for loc in state["VisLocs"]}
+            loc_nodes = {item["Name"] for item in state["LocNodes"]}
+            assert {"Node023", "Node026"} <= nodes & loc_nodes
+            assert not SPLIT_VARIANTS & (nodes | loc_nodes)
+            # Brink Ridge's blockade is won; the player stands on it.
+            brink = _split_node_location(state, "Node019")
+            brink.update({"completed": True, "visible": True,
+                          "enabled": True})
+            pdata = state["PublicState"]["Data"]
+            pdata["blockade_cleared"] = True
+            pdata.setdefault("visited_nodes", []).append("Node019")
+            state.update({"LastNode": "Node019", "ALoc": None})
+            check._save_state(db, area_id, state)
+            driver = check.Driver(db)
+            driver.state_request(area_id)
+            start = json.dumps(check._load_state(db, area_id))
+            for choice in ("choice_Help", "choice_NoHelp"):
+                db.execute("UPDATE campaigns SET state_json=? WHERE id=?",
+                           (start, area_id))
+                db.commit()
+                state = _play_split_node(db, driver, area_id, "Node023",
+                                         faction, choice)
+                assert state["PublicState"]["Data"]["node_choices"] == {
+                    "Node023": choice}
+            # The route 023 -> 026 -> 027 is open.
+            assert _split_node_location(state, "Node026")["visible"]
+            state = _play_split_node(db, driver, area_id, "Node026", faction)
+            assert _split_node_location(state, "Node027")["visible"]
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def test_stale_faction_variant_locations_move_to_their_map_node():
+    """Issue #34: saves holding Node023A/B and Node026A/B are rewritten to
+    the canonical nodes, keeping a won variant's result."""
+    import campaign_map_check as check
+    db, path = cloned_db()
+    try:
+        area_id, state = area_state(db, 6)
+        stale_locs, stale_nodes = [], []
+        for loc in state["VisLocs"]:
+            data = loc["Data"]
+            if data["node"] in ("Node023", "Node026"):
+                for suffix in ("A", "B"):
+                    stale_locs.append({"Data": dict(
+                        data, node=data["node"] + suffix,
+                        completed=(data["node"] + suffix == "Node023B"))})
+            else:
+                stale_locs.append(loc)
+        for item in state["LocNodes"]:
+            if item["Name"] in ("Node023", "Node026"):
+                for suffix in ("A", "B"):
+                    name = item["Name"] + suffix
+                    stale_nodes.append({"Name": name, "Data": {
+                        "id": name, "type": "DEFAULT"}})
+            else:
+                stale_nodes.append(item)
+        pdata = state["PublicState"]["Data"]
+        pdata["blocked_nodes"] = ["Node021", "Node023B", "Node023A",
+                                  "Node023"]
+        pdata["visited_nodes"] = pdata.get("visited_nodes", []) + ["Node023B"]
+        pdata["conversation_visits"] = {"Node023B": 1}
+        stale = dict(state, VisLocs=stale_locs, LocNodes=stale_nodes)
+        stale_json = json.dumps(stale)
+
+        def check_migrated(migrated):
+            nodes = [loc["Data"]["node"] for loc in migrated["VisLocs"]]
+            loc_nodes = [item["Name"] for item in migrated["LocNodes"]]
+            assert not SPLIT_VARIANTS & set(nodes + loc_nodes), nodes
+            assert nodes.count("Node023") == 1 == nodes.count("Node026")
+            assert loc_nodes.count("Node023") == 1 == loc_nodes.count(
+                "Node026")
+            assert _split_node_location(migrated, "Node023")["completed"]
+            data = migrated["PublicState"]["Data"]
+            assert data["blocked_nodes"].count("Node023") == 1
+            assert "Node023" in data["visited_nodes"]
+            assert data["conversation_visits"]["Node023"] == 1
+
+        # A reconnect (getcampstate hydration) repairs the save in place.
+        check._save_state(db, area_id, json.loads(stale_json))
+        check.Driver(db).state_request(area_id)
+        check_migrated(check._load_state(db, area_id))
+        # Re-entering the map from a panorama rebuilds it from SceneData and
+        # must keep the stale save's progress.
+        check._save_state(db, area_id, json.loads(stale_json))
+        _cid, rebuilt = campaign._activate_az1_area(db, 6)
+        check_migrated(rebuilt)
+    finally:
+        db.close()
+        os.unlink(path)
+
+
 # Map-wide check (issue #31, part C).  Known problems the check reports on a
 # fresh database; each entry is a real, unfixed finding with its reason.  A
-# fix must remove its entry (the comparison is exact).
-KNOWN_AZ1_MAP_PROBLEMS = {
-    # The client prefab has Node023/Node026; SceneData splits them into the
-    # faction variants Node023A/B and Node026A/B, which are not prefab nodes,
-    # so Saramago Crater and Johannes Bog never get a location.
-    "Node023": ["client map node (path endpoint) has no location/LocNode, "
-                "so the client never shows it"],
-    "Node026": ["client map node (path endpoint) has no location/LocNode, "
-                "so the client never shows it"],
-}
+# fix must remove its entry (the comparison is exact).  Saramago Crater and
+# Johannes Bog (Node023/Node026) were fixed by issue #34.
+KNOWN_AZ1_MAP_PROBLEMS = {}
 # SceneData locations without a client map node: never selectable, so not
 # visited (they must stay hidden; a visible one is a map problem).
-AZ1_NON_MAP_LOCATIONS = {"Node019B", "019B1", "Node019B2", "019B3", "Node019C",
-                         "Node023A", "Node023B", "Node026A", "Node026B"}
+AZ1_NON_MAP_LOCATIONS = {"Node019B", "019B1", "Node019B2", "019B3", "Node019C"}
 # AZ2 has no AREA runtime yet; its data check may report only this.
 AZ2_DATA_TODO = {node: ["dungeon terrain without a DungeonTemplate entrance "
                         "scene"]
@@ -2752,6 +2930,8 @@ if __name__ == "__main__":
         test_az1_dungeons_play_through_the_generic_runner,
         test_start_event_on_a_dungeon_entrance_enters_it,
         test_leaving_a_dungeon_returns_to_its_entrance,
+        test_saramago_crater_and_johannes_bog_play_by_faction_and_choice,
+        test_stale_faction_variant_locations_move_to_their_map_node,
         test_every_az1_node_keeps_the_client_contract,
         test_every_dungeon_map_keeps_the_client_contract,
     ]
