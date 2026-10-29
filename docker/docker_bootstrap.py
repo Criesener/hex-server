@@ -136,7 +136,8 @@ def create_records(path: Path, records: Path) -> None:
 
 
 def create_starter_decks(gamedata: Path | None, records: Path) -> None:
-    """Generate the race starter-deck catalog outside the image build."""
+    """Generate the race starter decks and the store deck products
+    (``generated/store_decks.json``) outside the image build."""
     output = ROOT / "generated" / "starter_decks.json"
     command = [
         sys.executable,

@@ -200,7 +200,7 @@ def encode_card_instance(buf, sizes, ft, guid, name, card_id, cost, atk, def_, i
 
 def encode_deck_bits(buf, sizes, ft, did, dname, did_val, champ_did,
                      card_guids, idx, pvp_champion_guid=None,
-                     equipment_slots=None):
+                     equipment_slots=None, cosmetics=None):
     """Encode one deck_bits inline WITH element header (for use in cardlist/decklist)."""
     f = buf.tell(); sizes.append(0)
     sidx = len(sizes) - 1
@@ -208,15 +208,33 @@ def encode_deck_bits(buf, sizes, ft, did, dname, did_val, champ_did,
     sep = lambda: buf.write(b";")
     w(str(idx)); sep(); w(str(sidx)); sep(); w(str(ft("Game.Shared.Domain.deck_bits"))); sep(); w("25"); sep()
     encode_deck_bits_fields(buf, sizes, ft, did, dname, did_val, champ_did,
-                            card_guids, pvp_champion_guid, equipment_slots)
+                            card_guids, pvp_champion_guid, equipment_slots,
+                            cosmetics)
     sizes[sidx] = buf.tell() - f
     return sidx
 
 
+_ZERO_GUID = "00000000-0000-0000-0000-000000000000"
+
+
+def deck_cosmetics(deck):
+    """``cosmetics`` mapping for ``encode_deck_bits_fields`` from a deck row."""
+    deck = deck or {}
+    return {"deck_sleeve": deck.get("deck_sleeve_guid") or _ZERO_GUID,
+            "gameboard": deck.get("gameboard_guid") or _ZERO_GUID,
+            "coin": deck.get("coin_guid") or _ZERO_GUID}
+
+
 def encode_deck_bits_fields(buf, sizes, ft, did, dname, did_val, champ_did,
                             card_guids, pvp_champion_guid=None,
-                            equipment_slots=None):
-    """Encode the 25 deck_bits fields directly (no element wrapper)."""
+                            equipment_slots=None, cosmetics=None):
+    """Encode the 25 deck_bits fields directly (no element wrapper).
+
+    ``cosmetics`` optionally carries the deck's ``deck_sleeve``,
+    ``gameboard`` and ``coin`` resource GUIDs (see ``deck_cosmetics``); a
+    missing entry is sent as the empty GUID.
+    """
+    cosmetics = cosmetics or {}
     w = lambda s: buf.write(s.encode("utf-8"))
     sep = lambda: buf.write(b";")
 
@@ -312,11 +330,11 @@ def encode_deck_bits_fields(buf, sizes, ft, did, dname, did_val, champ_did,
     w(hexlify(struct.pack("<Q", 0)).decode("ascii")); sep()
     sizes[-1] = buf.tell() - f_lh
     # 21. deck_sleeve
-    wf_rid("deck_sleeve", b"00000000-0000-0000-0000-000000000000")
-    # 22. gameboard
-    wf_rid("gameboard", b"00000000-0000-0000-0000-000000000000")
+    wf_rid("deck_sleeve", cosmetics.get("deck_sleeve") or _ZERO_GUID)
+    # 22. gameboard -- the battleboard chosen for this deck
+    wf_rid("gameboard", cosmetics.get("gameboard") or _ZERO_GUID)
     # 23. Coin
-    wf_rid("Coin", b"00000000-0000-0000-0000-000000000000")
+    wf_rid("Coin", cosmetics.get("coin") or _ZERO_GUID)
     # 24. player_id (ulong 0)
     f_pid = buf.tell(); sizes.append(0)
     w("player_id"); sep(); w(str(len(sizes)-1)); sep(); w(str(ft("System.UInt64"))); sep(); w("0"); sep()
@@ -629,15 +647,18 @@ def encode_objfmt_response(type_names, fields):
             for i, entry in enumerate(deck_data):
                 did, dname, did_val, champ_did, cards_json, card_guids = entry[:6]
                 equipment = entry[6] if len(entry) > 6 else None
+                cosmetics = entry[7] if len(entry) > 7 else None
                 encode_deck_bits(buf, sizes, find_type, did, dname, did_val,
                                  champ_did, card_guids, i,
-                                 equipment_slots=equipment)
+                                 equipment_slots=equipment,
+                                 cosmetics=cosmetics)
         elif tcode == "deckbits":
             did, dname, did_val, champ_did, card_guids = val[:5]
             pvp_champion_guid = val[5] if len(val) > 5 else None
+            cosmetics = val[6] if len(val) > 6 else None
             encode_deck_bits_fields(
                 buf, sizes, find_type, did, dname, did_val, champ_did,
-                card_guids, pvp_champion_guid)
+                card_guids, pvp_champion_guid, cosmetics=cosmetics)
         elif tcode == "champlist":
             w(str(ecount))
             sep()
@@ -1743,12 +1764,14 @@ def encode_store_response(items):
         f_el = buf.tell(); sizes.append(0)
         w(str(i)); sep(); w(str(len(sizes)-1)); sep(); w(str(ft(type_names[2]))); sep(); w("19"); sep()
 
-        # rawData JSON
-        is_deck = it["t"] == "collectordeck"
-        is_fullset = "Full Set" in it["n"]
-        is_non_set1_booster = it["t"] == "ShopBoosterTab" and it["template_guid"] != "a8b78207-686a-4994-b6cd-4548d1349841"
-        purchase_limit = 1 if (is_deck or is_fullset) else -1
-        hide_in_store = is_non_set1_booster
+        # rawData JSON.  Visibility and purchase limit come from the store
+        # catalog (store_catalog.json -> store_items); the id is the
+        # store_items row id the client sends back with PurchaseItem.
+        purchase_limit = int(it.get("limit", -1) or -1)
+        if purchase_limit <= 0:
+            purchase_limit = -1
+        hide_in_store = bool(it.get("hide", False))
+        store_item_id = int(it.get("id") or (i + 1))
 
         raw_json = json.dumps({
             "Price": it["price"], "ItemType": "Inventory", "CurrencyType": it["currency"],
@@ -1767,7 +1790,7 @@ def encode_store_response(items):
         # id (ulong)
         f = buf.tell(); sizes.append(0)
         w("id"); sep(); w(str(len(sizes)-1)); sep(); w(str(ft("System.UInt64"))); sep(); w("0"); sep()
-        w(hexlify(struct.pack("<Q", i + 1)).decode("ascii")); sep()
+        w(hexlify(struct.pack("<Q", store_item_id)).decode("ascii")); sep()
         sizes[-1] = buf.tell() - f
 
         # TemplateId (ResourceId with guid)

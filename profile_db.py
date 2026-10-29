@@ -797,10 +797,13 @@ def db_set_card_instance_extended_art(user_id, instance_id, conn=None):
 def db_get_store_items(conn=None):
     """Return the client store projection."""
     rows = _profile_connection(conn).execute(
-        "SELECT template_guid, name, short_desc, price, currency, store_tab "
+        "SELECT template_guid, name, short_desc, price, currency, store_tab, "
+        "id, hide_in_store, purchase_limit "
         "FROM store_items ORDER BY id").fetchall()
     return [{"n": row[1], "s": row[2] or "", "price": row[3],
-             "currency": row[4], "template_guid": row[0], "t": row[5]}
+             "currency": row[4], "template_guid": row[0], "t": row[5],
+             "id": int(row[6]), "hide": bool(row[7]),
+             "limit": int(row[8]) if row[8] is not None else -1}
             for row in rows]
 
 
@@ -1363,6 +1366,32 @@ def db_get_store_item(item_id, conn=None):
     return _profile_connection(conn).execute(
         "SELECT name, price, currency, template_guid, store_tab "
         "FROM store_items WHERE id=?", (int(item_id),)).fetchone()
+
+
+def db_store_item_purchase_limit(item_id, conn=None):
+    """Per-account purchase limit of a store item, or -1 when unlimited."""
+    row = _profile_connection(conn).execute(
+        "SELECT purchase_limit FROM store_items WHERE id=?",
+        (int(item_id),)).fetchone()
+    value = _row_value(row, "purchase_limit", 0) if row else None
+    return int(value) if value is not None else -1
+
+
+def db_count_purchases(user_id, template_guid, conn=None):
+    row = _profile_connection(conn).execute(
+        "SELECT COUNT(*) FROM store_purchases "
+        "WHERE user_id=? AND item_template_id=?",
+        (user_id, template_guid)).fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def db_inventory_client_uid_owner(user_id, client_item_uid, conn=None):
+    """Template GUID already holding *client_item_uid* for the user, if any."""
+    row = _profile_connection(conn).execute(
+        "SELECT template_guid FROM player_inventory "
+        "WHERE user_id=? AND client_item_uid=?",
+        (user_id, int(client_item_uid))).fetchone()
+    return _row_value(row, "template_guid", 0) if row else None
 
 
 def db_store_item_name_for_template(template_guid, conn=None):

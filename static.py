@@ -324,7 +324,9 @@ DDL = [
         short_desc TEXT,
         price INTEGER DEFAULT 100,
         currency TEXT DEFAULT 'Gold',
-        store_tab TEXT DEFAULT 'ShopBoosterTab'
+        store_tab TEXT DEFAULT 'cardpack',
+        hide_in_store INTEGER NOT NULL DEFAULT 0,
+        purchase_limit INTEGER NOT NULL DEFAULT -1
     )
     """,
     """
@@ -1245,91 +1247,70 @@ DDL = [
 # Static seed data.
 # ---------------------------------------------------------------------------
 
-# Booster / deck store catalogue.
-STORE_ITEMS = [
-    ("a8b78207-686a-4994-b6cd-4548d1349841", "Set 1: Shards of Fate", "17 cards from Shards of Fate", 100, "Gold", "ShopBoosterTab"),
-    ("f37fc1bc-4d7b-4bab-a2a2-770957d9a7b1", "Set 2: Shattered Destiny", "17 cards from Shattered Destiny", 200, "Gold", "ShopBoosterTab"),
-    ("237866c1-aea2-4cb4-89ca-418babda3595", "Set 3: Armies of Myth", "17 cards from Armies of Myth", 300, "Gold", "ShopBoosterTab"),
-    ("a8e324e3-b9fb-4bb6-b659-f2773982aed2", "Set 4: Primal Dawn", "17 cards from Primal Dawn", 400, "Gold", "ShopBoosterTab"),
-    ("84c65d9b-779b-4128-879d-b0779e6e6edc", "Set 5: Herofall", "17 cards from Herofall", 500, "Gold", "ShopBoosterTab"),
-    ("63273f9b-5f4d-4db7-a418-fc6e2c4c9900", "Set 6: Scars of War", "17 cards from Scars of War", 600, "Platinum", "ShopBoosterTab"),
-    ("df144885-0fb5-4238-942c-79b35870dabc", "Set 7: Frostheart", "17 cards from Frostheart", 700, "Platinum", "ShopBoosterTab"),
-    ("902193e6-645b-41be-ac51-23196335b788", "Set 8: Dead of Winter", "17 cards from Dead of Winter", 800, "Platinum", "ShopBoosterTab"),
-    ("3dacd91b-84f1-4ff9-99df-dae3f7740702", "Set 9", "17 cards from Set 9", 900, "Platinum", "ShopBoosterTab"),
-    ("3346fb56-d7e0-424d-906b-7c19352b64a2", "Common Only Booster", "Common cards only", 50, "Gold", "ShopBoosterTab"),
-    ("0b762d7f-04cd-4d43-9f78-c62af5e737d0", "Starter Pack", "Starter pack", 500, "Gold", "collectordeck"),
-    ("2822821c-fb21-4ac1-8bfc-5aabd4b362fa", "Dwarf Starter Deck", "Dwarf starter deck", 750, "Gold", "collectordeck"),
-    ("32409ae4-f154-405a-8295-3511561c7790", "Human Starter Deck", "Human starter deck", 750, "Gold", "collectordeck"),
-    ("decc9d0a-c30c-4c9b-a92d-228210950d52", "Orc Starter Deck", "Orc starter deck", 750, "Gold", "collectordeck"),
-    ("e7926be0-1c97-466c-9ccd-d8309f9e8703", "Shin'hare Starter Deck", "Shin'hare starter deck", 750, "Gold", "collectordeck"),
-    ("28f593e9-0d65-49f4-9d0d-4fe8bf5b06bd", "Coyotle Starter Deck", "Coyotle starter deck", 750, "Gold", "collectordeck"),
-    ("ef60488d-b7bd-4869-b98f-3adc153037ba", "Elf Starter Deck", "Elf starter deck", 750, "Gold", "collectordeck"),
-    ("a2138381-c7a8-4a91-ad75-084c803fdcc5", "Necrotic Starter Deck", "Necrotic starter deck", 750, "Gold", "collectordeck"),
-    ("c34c11b9-26f7-4c04-a334-3778b3fcfd59", "Vennen Starter Deck", "Vennen starter deck", 750, "Gold", "collectordeck"),
-    ("8d20082a-4163-4f42-8fce-d4c056f9da04", "Primal Pack: Set 1", "Primal pack - Shards of Fate", 500, "Platinum", "special"),
-    ("653f153b-8288-4ece-a304-2804c1e2ffb9", "Primal Pack: Set 2", "Primal pack - Shattered Destiny", 500, "Platinum", "special"),
-    ("7a6424ba-8b53-4050-82df-ed756406d87c", "Primal Pack: Set 3", "Primal pack - Armies of Myth", 500, "Platinum", "special"),
-    ("1db5d6c5-47eb-45e8-b98c-8441ed09e590", "Primal Pack: Set 4", "Primal pack - Primal Dawn", 500, "Platinum", "special"),
-    ("e296f8e0-680f-41e3-a764-7e9953b10be5", "Dwarf Tribe Booster", "Dwarf-themed cards", 150, "Gold", "special"),
-    ("4625f688-2987-4c57-8a8c-c1ab5b5ea744", "Human Tribe Booster", "Human-themed cards", 150, "Gold", "special"),
-    ("6307c815-0473-4f86-8967-2e3401730f74", "Orc Tribe Booster", "Orc-themed cards", 150, "Gold", "special"),
-    ("91c91bad-30a9-4c0c-9951-7c9432345da7", "Shin'hare Tribe Booster", "Shin'hare-themed cards", 150, "Gold", "special"),
-    ("1e94b92a-a7a9-4843-88a9-6c51a6699b79", "Coyotle Tribe Booster", "Coyotle-themed cards", 150, "Gold", "special"),
-    ("dde85dd8-9b2d-4b66-a2d6-11d4df385e7f", "Elf Tribe Booster", "Elf-themed cards", 150, "Gold", "special"),
-    ("aa12781d-effa-47fc-8306-b1a4c491551f", "Necrotic Tribe Booster", "Necrotic-themed cards", 150, "Gold", "special"),
-    ("d4de5a3a-6eba-4ebc-856d-1f161c675c83", "Vennen Tribe Booster", "Vennen-themed cards", 150, "Gold", "special"),
-    ("949a018e-8360-4623-b3da-dc915dcd1b38", "Kismet's Reverie I", "Kismet pack", 1000, "Platinum", "special"),
-    ("8d0947d9-91f1-4258-a965-d08dc97a8966", "Kismet's Reverie II", "Kismet pack", 1000, "Platinum", "special"),
-    ("c37d2d3b-a6ec-42bd-b75c-5faf27441dca", "Kismet's Reverie III", "Kismet pack", 1000, "Platinum", "special"),
-    ("d49e1966-be68-4f17-a6eb-6cd11d43ada0", "Kismet's Reverie IV", "Kismet pack", 1000, "Platinum", "special"),
-    ("7b8390fd-7d3d-44d4-b285-1aeae3aef98b", "AZ1 Campaign Booster", "PvE campaign cards", 300, "Gold", "special"),
-    ("d77471f5-7b32-4464-9552-c992a38fb4be", "AZ2 Campaign Booster", "PvE campaign cards", 300, "Gold", "special"),
-    ("cbf0f839-6827-4d94-b9c5-2a38389cf6a7", "Set 9 Draft Pack", "Draft pack", 500, "Platinum", "special"),
-    ("b3684e64-7634-4055-960c-620569160d2d", "Ardent Alliance Starter", "Dueling Pit starter", 1000, "Gold", "collectordeck"),
-    ("49c835d9-a0e1-4560-b5b8-e53f7193624c", "Ardent Fervor Starter", "Dueling Pit starter", 1000, "Gold", "collectordeck"),
-    ("f3551d71-8e68-466d-9012-f89efa8b3bb5", "Deadling Swarm Starter", "Dueling Pit starter", 1000, "Gold", "collectordeck"),
-    ("f3ecfc7f-8eef-4dbd-a950-c1a8c82f0eea", "Reckless Assault Starter", "Dueling Pit starter", 1000, "Gold", "collectordeck"),
-    ("09ed8e8a-cee9-4eee-9ef6-3a8a32948d8a", "Underworld Schemes Starter", "Dueling Pit starter", 1000, "Gold", "collectordeck"),
-    ("ed4e3d9a-afd0-471e-8912-386cc22ff0c8", "Valorous Victory Starter", "Dueling Pit starter", 1000, "Gold", "collectordeck"),
-    ("3c1a8175-d137-40f4-86ee-3d39e0b1158d", "PvE Champion: Coyotle", "PvE champion starter", 800, "Gold", "collectordeck"),
-    ("a0484173-ad18-42d2-a4b8-08cc21088c69", "PvE Champion: Dwarf", "PvE champion starter", 800, "Gold", "collectordeck"),
-    ("15eb25d9-359e-4dc2-ba54-a76462303723", "PvE Champion: Elf", "PvE champion starter", 800, "Gold", "collectordeck"),
-    ("752ef2e4-8eb3-4e24-93f2-6bf707c0aaff", "PvE Champion: Human", "PvE champion starter", 800, "Gold", "collectordeck"),
-    ("1351fed5-a0d5-44be-892c-78f4b40f7eb1", "PvE Champion: Necrotic", "PvE champion starter", 800, "Gold", "collectordeck"),
-    ("04a4dd5b-453f-468f-84ff-c9207c637525", "PvE Champion: Orc", "PvE champion starter", 800, "Gold", "collectordeck"),
-    ("cdfaf80e-4564-4690-9bfe-9486e0a9dbc1", "PvE Champion: Shin'hare", "PvE champion starter", 800, "Gold", "collectordeck"),
-    ("9672371b-00aa-49b0-b16a-aaa8aab45c73", "PvE Champion: Vennen", "PvE champion starter", 800, "Gold", "collectordeck"),
-    ("1fc81645-2f4c-42d7-818a-9b1fba9c49eb", "PvE Champion Starter 1", "PvE champion starter", 800, "Gold", "collectordeck"),
-    ("adb5ec90-88aa-4237-ba5a-cc58f620dcfc", "PvE Champion Starter 2", "PvE champion starter", 800, "Gold", "collectordeck"),
-    ("5e338ab1-da47-41ce-b980-4020f1b5b4fc", "Full Set: Shards of Fate", "Every card from Set 1", 5000, "Platinum", "special"),
-    ("17e0a0ff-7ec3-4ed7-a261-adb4dcfd6625", "Full Set: Shattered Destiny", "Every card from Set 2", 5000, "Platinum", "special"),
-    ("3bdc41b5-c265-4616-812e-9f1965787c33", "Full Set: Armies of Myth", "Every card from Set 3", 5000, "Platinum", "special"),
-    ("5bdb9ea1-9e03-42af-a23c-6968fff55ce5", "Full Set: Primal Dawn", "Every card from Set 4", 5000, "Platinum", "special"),
-    ("37fb3559-6f2e-4f53-b6d7-05c28c6c075d", "Full Set: Herofall", "Every card from Set 5", 5000, "Platinum", "special"),
-    ("a9ae9af2-e27a-48e0-9cd2-490d252fffe4", "Common Chest (Test)", "Test chest", 10, "Gold", "special"),
-    ("fc805076-1e91-4846-8b84-987c7779f7b9", "Ardent Assault", "Dueling Pit starter", 1000, "Gold", "collectordeck"),
-    ("45094301-308e-4b90-989f-62cfc4be4f51", "Collector's Deck - Shamrock, The Goldfather", "Collector deck", 1000, "Platinum", "collectordeck"),
-    ("f122e840-9e13-4c6d-9cd8-c94eff0e663c", "Collector's Deck - Eyes of the Heart", "Collector deck", 1000, "Platinum", "collectordeck"),
-    ("c547ecaf-240b-459d-bf3e-3ee5ab69b3df", "Collector's Deck - Hero of Legend", "Collector deck", 1000, "Platinum", "collectordeck"),
-    ("9bcd6ba9-b49d-48a3-9929-2f26f603dea2", "Collector's Deck - Locke of the Pack", "Collector deck", 1000, "Platinum", "collectordeck"),
-    ("030b84da-6adb-4177-bd1d-8602dd3be2fe", "Collector's Deck - Lord Blightbark", "Collector deck", 1000, "Platinum", "collectordeck"),
-    ("f5b4a7b1-8b5e-476d-800c-d37090c51c0d", "Collector's Deck - Lyvaanth", "Collector deck", 1000, "Platinum", "collectordeck"),
-    ("d9d666b9-8f78-42b7-9f56-9ff811d8aede", "Collector's Deck - Sunsoul Phoenix", "Collector deck", 1000, "Platinum", "collectordeck"),
-    ("62abd6a9-f58c-4a27-9d93-98cde9d093fb", "Collector's Deck - The Librarian", "Collector deck", 1000, "Platinum", "collectordeck"),
-    ("e7b9790f-7360-4480-8832-3286fbf87889", "Starter Pack - Coyotle", "Starter pack", 1000, "Gold", "collectordeck"),
-    ("fc9d814d-61da-4280-af93-503b957803f4", "Starter Deck - Dwarves", "Starter deck", 1000, "Gold", "collectordeck"),
-    ("08c5bcd9-bcb9-48b4-a540-6ab3e0b28609", "Starter Deck - Elf", "Starter deck", 1000, "Gold", "collectordeck"),
-    ("0ab2642f-0e03-49bb-97b8-db0a543eca2f", "Starter Deck - Humans", "Starter deck", 1000, "Gold", "collectordeck"),
-    ("f2a4d7a5-0595-4757-9014-26bbccccdebb", "Starter Deck - Necrotic", "Starter deck", 1000, "Gold", "collectordeck"),
-    ("393a1905-b31e-4435-85cc-530c7c8dd733", "Starter Deck - Orcs", "Starter deck", 1000, "Gold", "collectordeck"),
-    ("fffd4e8b-f22e-403c-a684-69c06b11a452", "Pathfinder Control", "Prebuilt deck", 1000, "Gold", "collectordeck"),
-    ("966cff30-4c16-4379-9361-1ecefba2d6a7", "Starter Deck - Shin'hare", "Starter deck", 1000, "Gold", "collectordeck"),
-    ("13ce6004-3d86-40ce-8886-e9e8f0e563ac", "Havoc's Rowdy Sugar Rush", "Prebuilt deck", 2500, "Gold", "collectordeck"),
-    ("b593d10b-d5c6-43bb-b001-50784b53512b", "NeroJinous' Momentum Mastery", "Prebuilt deck", 2500, "Gold", "collectordeck"),
-    ("c1e7d15e-90b9-4c5e-b20b-97cd16bd244a", "Snake's Refuel Rampage", "Prebuilt deck", 2500, "Gold", "collectordeck"),
-    ("0ce09934-9846-41de-a02c-7920d240441b", "Starter Deck - Vennen", "Starter deck", 1000, "Gold", "collectordeck"),
-    ("0951326e-2535-4a65-b410-f2490e54b3f5", "Yotul Burn", "Prebuilt deck", 1000, "Gold", "collectordeck"),
-]
+# Store catalogue: ``store_catalog.json`` (repo root) is the single source;
+# ``sync_store_catalog`` rebuilds ``store_items`` from it on every startup.
+STORE_CATALOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "store_catalog.json")
+STORE_TABS = ("cardpack", "collectordeck", "special")
+
+
+def load_store_catalog(path=None):
+    """Return the catalog as ``store_items`` rows in catalog order.
+
+    Each row is ``(id, template_guid, name, short_desc, price, currency,
+    store_tab, hide_in_store, purchase_limit)`` with contiguous ids from 1.
+    """
+    with open(path or STORE_CATALOG_PATH, encoding="utf-8") as handle:
+        document = json.load(handle)
+    rows = []
+    seen = set()
+    for entry in document.get("items", []):
+        template_guid = str(entry["template_guid"]).lower()
+        if template_guid in seen:
+            raise ValueError(f"duplicate store catalog product {template_guid}")
+        seen.add(template_guid)
+        tab = str(entry.get("tab") or "special")
+        if tab not in STORE_TABS:
+            raise ValueError(f"unknown store tab {tab!r} for {template_guid}")
+        limit = int(entry.get("purchase_limit") or -1)
+        rows.append((len(rows) + 1, template_guid, str(entry["name"]),
+                     str(entry.get("short_desc") or ""),
+                     int(entry["price"]), str(entry.get("currency") or "Gold"),
+                     tab, 1 if entry.get("hide_in_store") else 0,
+                     limit if limit > 0 else -1))
+    return rows
+
+
+def sync_store_catalog(db, path=None):
+    """Rebuild ``store_items`` from the catalog when it differs.
+
+    The client addresses products by ``store_items.id`` (sent as the store
+    item id), so the table is rewritten in catalog order with ids 1..N.
+    Purchases are recorded by template GUID and stay valid across rebuilds.
+    The caller's connection commits; the delete and inserts are one unit.
+    """
+    try:
+        rows = load_store_catalog(path)
+    except FileNotFoundError:
+        return False
+    current = [tuple(row) for row in db.execute(
+        "SELECT id, template_guid, name, short_desc, price, currency, "
+        "store_tab, hide_in_store, purchase_limit FROM store_items "
+        "ORDER BY id")]
+    if current == rows:
+        return False
+    db.execute("DELETE FROM store_items")
+    db.executemany(
+        "INSERT INTO store_items (id, template_guid, name, short_desc, price, "
+        "currency, store_tab, hide_in_store, purchase_limit) "
+        "VALUES (?,?,?,?,?,?,?,?,?)", rows)
+    try:
+        db.execute("UPDATE sqlite_sequence SET seq=? WHERE name='store_items'",
+                   (len(rows),))
+    except sqlite3.OperationalError:
+        pass
+    return True
+
 
 # Chest drop probabilities.
 CHEST_PROBABILITIES = [
@@ -2891,11 +2872,11 @@ def ensure_schema(db):
     except Exception:
         pass
 
-    if db.execute("SELECT COUNT(*) FROM store_items").fetchone()[0] == 0:
-        db.executemany(
-            "INSERT INTO store_items (template_guid, name, short_desc, price, currency, store_tab) "
-            "VALUES (?,?,?,?,?,?)",
-            STORE_ITEMS)
+    _ensure_column(db, "store_items", "hide_in_store",
+                   "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(db, "store_items", "purchase_limit",
+                   "INTEGER NOT NULL DEFAULT -1")
+    sync_store_catalog(db)
 
     # Pack-to-set GUID mapping (store pack GUID → card_templates.set_guid).
     PACK_SET_MAP = [
@@ -2915,11 +2896,20 @@ def ensure_schema(db):
         ("3bdc41b5-c265-4616-812e-9f1965787c33", "fce480eb-15f9-4096-8d12-6beee9118652", 1, 0),  # Full Set 3
         ("5bdb9ea1-9e03-42af-a23c-6968fff55ce5", "2d05262c-d7a0-408f-a280-36d206a29344", 1, 0),  # Full Set 4
         ("37fb3559-6f2e-4f53-b6d7-05c28c6c075d", "ecdbc188-5750-48ef-acac-05e2bcbcc46f", 1, 0),  # Full Set 5
+        ("ef3b7d2f-92f4-48a1-bc4f-075be5a02438", "fbbac856-2264-4d31-97b0-0d8a646b9597", 1, 0),  # Full Set 6
+        ("1d9320d0-f5e1-448d-ac39-a46836d8886e", "326602fa-e183-4dfe-8300-55cc0c7c4ce8", 1, 0),  # Full Set 7
+        ("a1569225-683a-4c84-92fa-238e4f8821ad", "9a824393-cd11-4273-a05e-41e35eb50dbe", 1, 0),  # Full Set 8
+        ("56ca0060-48ea-401d-9526-f1f7bc7cbe88", "54f14f51-2afe-4a26-be28-d251b06a9cc4", 1, 0),  # Full Set 9
         # Primal packs
         ("8d20082a-4163-4f42-8fce-d4c056f9da04", "0382f729-7710-432b-b761-13677982dcd2", 0, 1),  # Primal Set 1
         ("653f153b-8288-4ece-a304-2804c1e2ffb9", "b05e69d2-299a-4eed-ac31-3f1b4fa36470", 0, 1),  # Primal Set 2
         ("7a6424ba-8b53-4050-82df-ed756406d87c", "fce480eb-15f9-4096-8d12-6beee9118652", 0, 1),  # Primal Set 3
         ("1db5d6c5-47eb-45e8-b98c-8441ed09e590", "2d05262c-d7a0-408f-a280-36d206a29344", 0, 1),  # Primal Set 4
+        ("b81a826b-91a7-4dbc-8248-a4d90ed1aaf7", "ecdbc188-5750-48ef-acac-05e2bcbcc46f", 0, 1),  # Primal Set 5
+        ("7515c3ea-29de-47c5-bdcd-6a3fcdc457e1", "fbbac856-2264-4d31-97b0-0d8a646b9597", 0, 1),  # Primal Set 6
+        ("f13bffe7-8100-4afe-b31e-64069a33229a", "326602fa-e183-4dfe-8300-55cc0c7c4ce8", 0, 1),  # Primal Set 7
+        ("56570772-83b3-46b9-97e7-8dbbafd05b53", "9a824393-cd11-4273-a05e-41e35eb50dbe", 0, 1),  # Primal Set 8
+        ("37de2bdb-c742-4495-a5be-5d3214c37009", "54f14f51-2afe-4a26-be28-d251b06a9cc4", 0, 1),  # Primal Set 9
     ]
     if PACK_SET_MAP:
         db.executemany(

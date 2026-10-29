@@ -57,11 +57,13 @@ def test_primal_mapping_core_sets():
 
 
 def test_no_primal_for_later_sets_or_primals():
-    # Sets 5-9 have no Primal version -> no upgrade.
+    # Every set has a Primal Pack since the store sells Primal 1-9 (#42).
     assert db_primal_pack_for(
-        "84c65d9b-779b-4128-879d-b0779e6e6edc") is None  # Set 5
+        "84c65d9b-779b-4128-879d-b0779e6e6edc"
+    ) == "b81a826b-91a7-4dbc-8248-a4d90ed1aaf7"  # Set 5 -> Herofall Primal
     assert db_primal_pack_for(
-        "3dacd91b-84f1-4ff9-99df-dae3f7740702") is None  # Set 9
+        "3dacd91b-84f1-4ff9-99df-dae3f7740702"
+    ) == "37de2bdb-c742-4495-a5be-5d3214c37009"  # Set 9 -> Doombringer Primal
     # Purchasing a Primal pack itself never re-upgrades.
     assert db_primal_pack_for(
         "8d20082a-4163-4f42-8fce-d4c056f9da04") is None
@@ -139,7 +141,7 @@ if __name__ == "__main__":
     run("roll just under threshold", test_roll_just_under_threshold_upgrades)
     run("roll mixed quantity", test_roll_mixed_quantity)
     run("primal mapping for core sets", test_primal_mapping_core_sets)
-    run("no primal for later sets/primals", test_no_primal_for_later_sets_or_primals)
+    run("primal for later sets, none for primals", test_no_primal_for_later_sets_or_primals)
     run("full set excludes alternate art rarities", test_full_set_excludes_alternate_art_rarities)
     run("booster stays in requested set", test_booster_stays_in_requested_set_and_excludes_generated_lands)
     run("pack map uses canonical set GUIDs", test_pack_map_uses_canonical_core_set_guids)

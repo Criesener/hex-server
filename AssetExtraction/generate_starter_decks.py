@@ -11,7 +11,13 @@ Run from the repository root::
 
     python3 AssetExtraction/generate_starter_decks.py
 
-The generated file is intentionally written below ``generated/``.  That
+It also writes ``generated/store_decks.json``: the card list of every named
+``InventoryStarterPack`` (the store's deck products: race starters, Dueling
+Pit, Collector's and signature decks), keyed by the product GUID and read
+from the pack's ``m_DeckTemplateId`` DeckTemplate.  Buying such a product
+grants that deck (``services/store.py``).
+
+The generated files are intentionally written below ``generated/``.  That
 directory is ignored and is created by Docker at startup when the gamedata
 source is available.
 """
@@ -40,6 +46,7 @@ from AssetExtraction.gamedata_seed import (
 
 
 DEFAULT_OUTPUT = ROOT / "generated" / "starter_decks.json"
+DEFAULT_STORE_OUTPUT = ROOT / "generated" / "store_decks.json"
 RACES = ("Human", "Elf", "Coyotle", "Orc", "Dwarf", "ShinHare", "Vennen", "Necrotic")
 
 # These names are valid DeckTemplate records but are not player starter decks.
@@ -136,19 +143,73 @@ def generate(data: str) -> dict[str, dict[str, Any]]:
     return result
 
 
+def generate_store_decks(data: str) -> dict[str, dict[str, Any]]:
+    """Card lists of the named ``InventoryStarterPack`` products, by GUID."""
+    card_ids = set(_card_rarities(data))
+    champion_ids = set(_champion_races(data))
+    decks = {nested_guid(deck, "m_Id"): deck
+             for _, deck in records(data, "DeckTemplate")[0]
+             if nested_guid(deck, "m_Id")}
+    result: dict[str, dict[str, Any]] = {}
+    skipped: list[str] = []
+    for _, item in records(data, "InventoryItemData")[0]:
+        if not str(item.get("_t") or "").endswith("InventoryStarterPack"):
+            continue
+        name = str(item.get("m_Name") or "").strip()
+        pack_guid = nested_guid(item, "m_Id")
+        if not name or not pack_guid:
+            continue
+        deck = decks.get(nested_guid(item, "m_DeckTemplateId"))
+        cards: list[list[Any]] = []
+        for resource in (deck or {}).get("m_DeckResources") or []:
+            if not isinstance(resource, dict):
+                continue
+            card_guid = nested_guid(resource, "m_idTemplate")
+            count = int(resource.get("m_Count") or 0)
+            if card_guid in card_ids and count > 0:
+                cards.append([card_guid, count])
+        if not cards:
+            skipped.append(name)
+            continue
+        champion = nested_guid(deck, "m_ChampionId")
+        result[pack_guid] = {
+            "name": name,
+            "deck_name": str(deck.get("m_DeckName") or name),
+            "deck_template": nested_guid(deck, "m_Id"),
+            "champion_guid": champion if champion in champion_ids else "",
+            "cards": cards,
+        }
+    print(f"Store decks: {len(result)} products with card lists"
+          + (f"; skipped {', '.join(skipped)}" if skipped else ""))
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--records-dir", type=Path, help="Records directory to read")
     parser.add_argument("--gamedata", type=Path, help="Compressed client gamedata file to read")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT,
                         help=f"Generated JSON path (default: {DEFAULT_OUTPUT})")
+    parser.add_argument("--store-output", type=Path, default=None,
+                        help="Store deck products JSON path (default: "
+                             "store_decks.json next to --output)")
     args = parser.parse_args()
 
     output = args.output if args.output.is_absolute() else ROOT / args.output
     output.parent.mkdir(parents=True, exist_ok=True)
-    result = generate(_load_source(args.records_dir, args.gamedata))
+    data = _load_source(args.records_dir, args.gamedata)
+    result = generate(data)
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(f"Wrote {len(result)} starter decks to {output}")
+
+    store_output = args.store_output or output.with_name(DEFAULT_STORE_OUTPUT.name)
+    if not store_output.is_absolute():
+        store_output = ROOT / store_output
+    store_output.parent.mkdir(parents=True, exist_ok=True)
+    store_decks = generate_store_decks(data)
+    store_output.write_text(json.dumps(store_decks, indent=2) + "\n",
+                            encoding="utf-8")
+    print(f"Wrote {len(store_decks)} store decks to {store_output}")
 
 
 if __name__ == "__main__":

@@ -19444,13 +19444,15 @@ class HCPHandler(ProfileStreamMixin):
             e2 = deck_name.encode("utf-8"); W(str(len(e2))); S(); b.write(e2)
             sz[-1] = b.tell() - f2
             wfld("PVEChampionId", "System.UInt64", hexlify(struct.pack("<Q", 0)).decode("ascii"))
-            # ResourceId fields — use empty guid
-            def wrid2(name):
+            # ResourceId fields — the empty guid unless the deck stores one
+            def wrid2(name, guid_value=None):
+                gbytes = str(guid_value or
+                             "00000000-0000-0000-0000-000000000000").encode("utf-8")
                 f2 = b.tell(); sz.append(0)
                 W(name); S(); W(str(len(sz)-1)); S(); W(str(ft2("Game.Shared.ResourceId"))); S(); W("1"); S()
                 fs2 = b.tell(); sz.append(0)
                 W("guid"); S(); W(str(len(sz)-1)); S(); W(str(ft2("System.Guid"))); S(); W("0"); S()
-                W("36"); S(); b.write(b"00000000-0000-0000-0000-000000000000")
+                W(str(len(gbytes))); S(); b.write(gbytes)
                 sz[-1] = b.tell() - fs2 ; sz[-2] = b.tell() - f2
             wrid2("PVPChampionId")
             for t in range(1,6): wrid2(f"talent_{t}")
@@ -19497,9 +19499,11 @@ class HCPHandler(ProfileStreamMixin):
             W("0"); S()
             sz[-1] = b.tell() - f2
             wfld("LockHolder", "System.UInt64", hexlify(struct.pack("<Q", 0)).decode("ascii"))
-            wrid2("deck_sleeve")
-            wrid2("gameboard")
-            wrid2("Coin")
+            wrid2("deck_sleeve", deck_sleeve_guid)
+            # The board picked for this deck (a bought battleboard) must be
+            # echoed back, or the client resets it to the default board.
+            wrid2("gameboard", gameboard_guid)
+            wrid2("Coin", coin_guid)
             wfld("player_id", "System.UInt64", hexlify(struct.pack("<Q", 0)).decode("ascii"))
             sz[dbx] = b.tell() - f
             # Size table

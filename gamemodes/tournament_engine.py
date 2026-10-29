@@ -24,7 +24,8 @@ from tournament_db import (
     db_tournament_player_score, db_tournament_finalize_player_run,
     db_tournament_player_run_live)
 from pvp_db import db_game_deck_cards, db_delete_game_session
-from encoder import encode_objfmt_response, compress_gzip, encode_datawrapper, client_session_guid
+from encoder import (encode_objfmt_response, compress_gzip, encode_datawrapper,
+                     client_session_guid, deck_cosmetics)
 import gamemodes.tournament_server as tournament_server
 from domain.enums import ESessionFlags, ETournamentFormats
 from domain.constants import (
@@ -175,13 +176,15 @@ def _encode_enter_tournament_error(comp, session_id, tournament_id, error_name):
 
 
 def _make_deck_data(deck_id):
-    """Return (did, dname, did_val, champ_did, card_guids) for deckbits encoding."""
+    """Return deckbits data: (did, dname, did_val, champ_did, card_guids,
+    pvp_champion_guid, cosmetics)."""
     deck = db_get_deck_by_id(int(deck_id) if deck_id else 0)
     if not deck:
         return (f"d{deck_id}", "Unknown Deck", int(deck_id) if deck_id else 0, 0, [])
     return (f"d{deck_id}", deck.get("deck_name") or f"Deck #{deck_id}",
             int(deck_id) if deck_id else 0,
-            int(deck.get("pve_champion_id") or 0), [])
+            int(deck.get("pve_champion_id") or 0), [], None,
+            deck_cosmetics(deck))
 
 
 def _tournament_format_bitmask(room):

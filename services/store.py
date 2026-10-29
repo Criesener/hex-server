@@ -9,15 +9,21 @@ from profile_db import (db_get_store_items, db_adjust_user_currency,
                         db_next_card_instance_for_user, db_insert_card_instance,
                         db_add_collection, db_get_store_item,
                         db_get_user_currency, db_set_user_currency,
-                        db_set_inventory_client_uid)
+                        db_set_inventory_client_uid, db_inventory_item,
+                        db_next_inventory_client_uid,
+                        db_inventory_client_uid_owner,
+                        db_store_item_purchase_limit, db_count_purchases)
 from pvp_db import db_pvp_booster_card_guids
 from encoder import encode_objfmt_response, compress_gzip, encode_datawrapper, encode_store_response
 
 # Store deck data — loaded from JSON files in Hex root
 _ROOT = os.path.dirname(os.path.dirname(__file__))
 
+# Deck products by store template GUID (every named InventoryStarterPack),
+# generated from their DeckTemplate records by
+# AssetExtraction/generate_starter_decks.py.  Read-only after import.
 _STORE_DECK_CARDS = {}
-_path = os.path.join(_ROOT, "starter_deck_cards.json")
+_path = os.path.join(_ROOT, "generated", "store_decks.json")
 if os.path.exists(_path):
     with open(_path) as f:
         _STORE_DECK_CARDS = json.load(f)
@@ -96,7 +102,8 @@ def send_purchase_failure(handler, target, instance, reqid, comp,
         error_message=error_message)
 
 
-def _grant_deck_to_player(user_id, cards, deck_name, handler=None, conn=None):
+def _grant_deck_to_player(user_id, cards, deck_name, handler=None, conn=None,
+                          pvp_champion_guid=None):
     """Grant cards to collection + card_instances, create deck, push to client.
     
     The deck's cards column stores instance IDs (integer), not template GUIDs,
@@ -112,7 +119,9 @@ def _grant_deck_to_player(user_id, cards, deck_name, handler=None, conn=None):
             instance_ids.append(cid)
             cid += 1
     cards_json = json.dumps(instance_ids)
-    deck_db_id = db_save_deck(user_id, deck_name, cards_json, conn=conn)
+    deck_db_id = db_save_deck(user_id, deck_name, cards_json,
+                              pvp_champion_guid=pvp_champion_guid or None,
+                              conn=conn)
     log_req(f"    Granted {deck_name}: {len(instance_ids)} cards, deck_id={deck_db_id}")
     if handler is not None:
         handler.push_cards_to_client()
@@ -168,6 +177,14 @@ def apply_purchase(conn, user_id, item_id, quantity):
 
     if quantity <= 0 or cost < 0:
         return rejected(6, "Invalid purchase quantity or price.")
+    # Per-account limit from the catalog (Collector's Decks, Full Sets,
+    # battleboards).  Counted inside the caller's transaction, so two
+    # concurrent purchases of the same product serialize on the write lock.
+    limit = db_store_item_purchase_limit(item_id, conn=conn)
+    if limit > 0 and template_guid and (
+            db_count_purchases(user_id, template_guid, conn=conn)
+            + quantity > limit):
+        return rejected(6, "Purchase limit reached.")
     total_cost = cost * quantity
     if total_cost > balance:
         error_code = (1 if currency_type == "Platinum" else
@@ -179,16 +196,15 @@ def apply_purchase(conn, user_id, item_id, quantity):
     remaining = balance - total_cost
     db_set_user_currency(user_id, balance_column, remaining, conn=conn)
 
-    granted_list = []
     deck_granted = False
-    if template_guid:
-        granted_list = [(template_guid, 1000 + int(item_id), int(quantity))]
     if store_tab == "collectordeck" and template_guid:
         deck_data = _STORE_DECK_CARDS.get(template_guid)
-        if deck_data:
-            _grant_deck_to_player(
-                user_id, deck_data["cards"], deck_data.get("name", item_name),
-                conn=conn)
+        if deck_data and deck_data.get("cards"):
+            for _ in range(quantity):
+                _grant_deck_to_player(
+                    user_id, deck_data["cards"],
+                    deck_data.get("name") or item_name, conn=conn,
+                    pvp_champion_guid=deck_data.get("champion_guid"))
             deck_granted = True
         elif item_name:
             race = item_name.replace(" Starter Deck", "").replace(
@@ -201,10 +217,23 @@ def apply_purchase(conn, user_id, item_id, quantity):
     db_record_purchase(
         user_id, item_name, template_guid, int(cost) * int(quantity),
         currency_type, conn=conn)
+    client_uid = 0
+    granted_list = []
     if template_guid:
         db_add_inventory(user_id, template_guid, int(quantity), conn=conn)
+        # A new inventory row takes the store UID space ``1000 + id``.  Store
+        # ids follow the catalog order, so after a catalog change that UID
+        # may already belong to another product the player owns; never hand
+        # out a duplicate client UID.
+        desired_uid = 1000 + int(item_id)
+        owner = db_inventory_client_uid_owner(user_id, desired_uid, conn=conn)
+        if owner and owner != template_guid:
+            desired_uid = db_next_inventory_client_uid(user_id, conn=conn)
         db_set_inventory_client_uid(
-            user_id, template_guid, 1000 + int(item_id), conn=conn)
+            user_id, template_guid, desired_uid, conn=conn)
+        row = db_inventory_item(user_id, template_guid, conn=conn)
+        client_uid = int(row[2] or desired_uid) if row else desired_uid
+        granted_list = [(template_guid, client_uid, int(quantity))]
     return {
         "success": True,
         "error_code": 0,
@@ -218,6 +247,7 @@ def apply_purchase(conn, user_id, item_id, quantity):
         "deck_granted": deck_granted,
         "granted_list": granted_list,
         "total_cost": total_cost,
+        "client_uid": client_uid,
     }
 
 
@@ -335,7 +365,7 @@ def handle_purchase(handler, target, instance, reqid, comp, session_id, conh,
     if success and template_guid:
         handler.push_inventory_to_client(
             qty=result["quantity"], template_guid=template_guid,
-            item_id=1000 + result["item_id"])
+            item_id=result.get("client_uid") or 1000 + result["item_id"])
     if success:
         log_req(f"    Sent PurchaseItem response: remaining={remaining} {currency_type}")
     else:

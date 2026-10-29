@@ -32,6 +32,7 @@ COPY dungeon_choices.json /hex/dungeon_choices.json
 COPY az1_node_variants.json /hex/az1_node_variants.json
 COPY az1_rewards.json /hex/az1_rewards.json
 COPY pack_loot_tables.json /hex/pack_loot_tables.json
+COPY store_catalog.json /hex/store_catalog.json
 COPY AssetExtraction/ /hex/AssetExtraction/
 COPY abilities/ /hex/abilities/
 COPY application/ /hex/application/

@@ -1,0 +1,806 @@
+{
+  "_comment": [
+    "Store catalog (issue #42): the HEX Revival product range priced in gold.",
+    "static.ensure_schema rebuilds store_items from this list on every boot, in this order, with ids 1..N.",
+    "Fields: template_guid (InventoryItemData m_Id), name, short_desc, tab (client StoreTab: cardpack | collectordeck | special),",
+    "price, currency (Gold), optional purchase_limit (per account, >0), optional hide_in_store, _source (game-data record)."
+  ],
+  "items": [
+    {
+      "template_guid": "a8b78207-686a-4994-b6cd-4548d1349841",
+      "name": "Shards of Fate Booster Pack",
+      "short_desc": "17 cards from Shards of Fate",
+      "tab": "cardpack",
+      "price": 200,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Shards of Fate Booster Pack"
+    },
+    {
+      "template_guid": "f37fc1bc-4d7b-4bab-a2a2-770957d9a7b1",
+      "name": "Shattered Destiny Booster Pack",
+      "short_desc": "17 cards from Shattered Destiny",
+      "tab": "cardpack",
+      "price": 200,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Shattered Destiny Booster Pack"
+    },
+    {
+      "template_guid": "237866c1-aea2-4cb4-89ca-418babda3595",
+      "name": "Armies of Myth Booster Pack",
+      "short_desc": "17 cards from Armies of Myth",
+      "tab": "cardpack",
+      "price": 200,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Armies of Myth Booster Pack"
+    },
+    {
+      "template_guid": "a8e324e3-b9fb-4bb6-b659-f2773982aed2",
+      "name": "Primal Dawn Booster Pack",
+      "short_desc": "17 cards from Primal Dawn",
+      "tab": "cardpack",
+      "price": 200,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Primal Dawn Booster Pack"
+    },
+    {
+      "template_guid": "84c65d9b-779b-4128-879d-b0779e6e6edc",
+      "name": "Herofall Booster Pack",
+      "short_desc": "17 cards from Herofall",
+      "tab": "cardpack",
+      "price": 200,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Herofall Booster Pack"
+    },
+    {
+      "template_guid": "63273f9b-5f4d-4db7-a418-fc6e2c4c9900",
+      "name": "Scars of War Booster Pack",
+      "short_desc": "17 cards from Scars of War",
+      "tab": "cardpack",
+      "price": 200,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Scars of War Booster Pack"
+    },
+    {
+      "template_guid": "df144885-0fb5-4238-942c-79b35870dabc",
+      "name": "Frostheart Booster Pack",
+      "short_desc": "17 cards from Frostheart",
+      "tab": "cardpack",
+      "price": 200,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Frostheart Booster Pack"
+    },
+    {
+      "template_guid": "902193e6-645b-41be-ac51-23196335b788",
+      "name": "Dead of Winter Booster Pack",
+      "short_desc": "17 cards from Dead of Winter",
+      "tab": "cardpack",
+      "price": 200,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Dead of Winter Booster Pack"
+    },
+    {
+      "template_guid": "3dacd91b-84f1-4ff9-99df-dae3f7740702",
+      "name": "Doombringer Booster Pack",
+      "short_desc": "17 cards from Doombringer",
+      "tab": "cardpack",
+      "price": 200,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Doombringer Booster Pack"
+    },
+    {
+      "template_guid": "8d20082a-4163-4f42-8fce-d4c056f9da04",
+      "name": "Primal Pack: Shards of Fate",
+      "short_desc": "13 rares and 2 legendaries from Shards of Fate",
+      "tab": "cardpack",
+      "price": 3000,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Set 001 Primal Pack"
+    },
+    {
+      "template_guid": "653f153b-8288-4ece-a304-2804c1e2ffb9",
+      "name": "Primal Pack: Shattered Destiny",
+      "short_desc": "13 rares and 2 legendaries from Shattered Destiny",
+      "tab": "cardpack",
+      "price": 3000,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Set 002 Primal Pack"
+    },
+    {
+      "template_guid": "7a6424ba-8b53-4050-82df-ed756406d87c",
+      "name": "Primal Pack: Armies of Myth",
+      "short_desc": "13 rares and 2 legendaries from Armies of Myth",
+      "tab": "cardpack",
+      "price": 3000,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Set 003 Primal Pack"
+    },
+    {
+      "template_guid": "1db5d6c5-47eb-45e8-b98c-8441ed09e590",
+      "name": "Primal Pack: Primal Dawn",
+      "short_desc": "13 rares and 2 legendaries from Primal Dawn",
+      "tab": "cardpack",
+      "price": 3000,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Set 004 Primal Pack"
+    },
+    {
+      "template_guid": "b81a826b-91a7-4dbc-8248-a4d90ed1aaf7",
+      "name": "Primal Pack: Herofall",
+      "short_desc": "13 rares and 2 legendaries from Herofall",
+      "tab": "cardpack",
+      "price": 3000,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Herofall Primal Pack"
+    },
+    {
+      "template_guid": "7515c3ea-29de-47c5-bdcd-6a3fcdc457e1",
+      "name": "Primal Pack: Scars of War",
+      "short_desc": "13 rares and 2 legendaries from Scars of War",
+      "tab": "cardpack",
+      "price": 3000,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Scars of War Primal Pack"
+    },
+    {
+      "template_guid": "f13bffe7-8100-4afe-b31e-64069a33229a",
+      "name": "Primal Pack: Frostheart",
+      "short_desc": "13 rares and 2 legendaries from Frostheart",
+      "tab": "cardpack",
+      "price": 3000,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Frostheart Primal Pack"
+    },
+    {
+      "template_guid": "56570772-83b3-46b9-97e7-8dbbafd05b53",
+      "name": "Primal Pack: Dead of Winter",
+      "short_desc": "13 rares and 2 legendaries from Dead of Winter",
+      "tab": "cardpack",
+      "price": 3000,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Dead of Winter Primal Pack"
+    },
+    {
+      "template_guid": "37de2bdb-c742-4495-a5be-5d3214c37009",
+      "name": "Primal Pack: Doombringer",
+      "short_desc": "13 rares and 2 legendaries from Doombringer",
+      "tab": "cardpack",
+      "price": 3000,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Doombringer Primal Pack"
+    },
+    {
+      "template_guid": "fc805076-1e91-4846-8b84-987c7779f7b9",
+      "name": "Ardent Assault",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: Ardent Assault"
+    },
+    {
+      "template_guid": "e7b9790f-7360-4480-8832-3286fbf87889",
+      "name": "Starter Pack - Coyotle",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: Starter Pack - Coyotle"
+    },
+    {
+      "template_guid": "b3684e64-7634-4055-960c-620569160d2d",
+      "name": "Ardent Alliance",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: Ardent Alliance"
+    },
+    {
+      "template_guid": "49c835d9-a0e1-4560-b5b8-e53f7193624c",
+      "name": "Dueling Pit - Ardent Fervor",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: Dueling Pit - Ardent Fervor"
+    },
+    {
+      "template_guid": "f3551d71-8e68-466d-9012-f89efa8b3bb5",
+      "name": "Dueling Pit - Dreadling Swarm",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: Dueling Pit - Dreadling Swarm"
+    },
+    {
+      "template_guid": "f3ecfc7f-8eef-4dbd-a950-c1a8c82f0eea",
+      "name": "Dueling Pit - Reckless Assault",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: Dueling Pit - Reckless Assault"
+    },
+    {
+      "template_guid": "09ed8e8a-cee9-4eee-9ef6-3a8a32948d8a",
+      "name": "Dueling Pit - Underworld Schemes",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: Dueling Pit - Underworld Schemes"
+    },
+    {
+      "template_guid": "ed4e3d9a-afd0-471e-8912-386cc22ff0c8",
+      "name": "Dueling Pit - Valorous Victory",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: Dueling Pit - Valorous Victory"
+    },
+    {
+      "template_guid": "fc9d814d-61da-4280-af93-503b957803f4",
+      "name": "Starter Deck - Dwarves",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: Starter Deck - Dwarves"
+    },
+    {
+      "template_guid": "08c5bcd9-bcb9-48b4-a540-6ab3e0b28609",
+      "name": "Starter Deck - Elf",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: Starter Deck - Elf"
+    },
+    {
+      "template_guid": "0ab2642f-0e03-49bb-97b8-db0a543eca2f",
+      "name": "Starter Deck - Humans",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: Starter Deck - Humans"
+    },
+    {
+      "template_guid": "f2a4d7a5-0595-4757-9014-26bbccccdebb",
+      "name": "Starter Deck - Necrotic",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: Starter Deck - Necrotic"
+    },
+    {
+      "template_guid": "393a1905-b31e-4435-85cc-530c7c8dd733",
+      "name": "Starter Deck - Orcs",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: Starter Deck - Orcs"
+    },
+    {
+      "template_guid": "fffd4e8b-f22e-403c-a684-69c06b11a452",
+      "name": "Pathfinder Control",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: Pathfinder Control"
+    },
+    {
+      "template_guid": "966cff30-4c16-4379-9361-1ecefba2d6a7",
+      "name": "Starter Deck - Shin'hare",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: Starter Deck - Shin'hare"
+    },
+    {
+      "template_guid": "13ce6004-3d86-40ce-8886-e9e8f0e563ac",
+      "name": "Havoc's Rowdy Sugar Rush",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 2500,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: Havoc's Rowdy Sugar Rush"
+    },
+    {
+      "template_guid": "b593d10b-d5c6-43bb-b001-50784b53512b",
+      "name": "NeroJinous' Momentum Mastery",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 2500,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: NeroJinous' Momentum Mastery"
+    },
+    {
+      "template_guid": "c1e7d15e-90b9-4c5e-b20b-97cd16bd244a",
+      "name": "Snake's Refuel Rampage",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 2500,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: Snake's Refuel Rampage"
+    },
+    {
+      "template_guid": "0ce09934-9846-41de-a02c-7920d240441b",
+      "name": "Starter Deck - Vennen",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: Starter Deck - Vennen"
+    },
+    {
+      "template_guid": "0951326e-2535-4a65-b410-f2490e54b3f5",
+      "name": "Yotul Burn",
+      "short_desc": "Ready-to-play constructed deck",
+      "tab": "collectordeck",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryStarterPack: Yotul Burn"
+    },
+    {
+      "template_guid": "45094301-308e-4b90-989f-62cfc4be4f51",
+      "name": "Collector's Deck - Shamrock, The Goldfather",
+      "short_desc": "Collector's deck",
+      "tab": "collectordeck",
+      "price": 2500,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryStarterPack: Collector's Deck - Shamrock, The Goldfather"
+    },
+    {
+      "template_guid": "f122e840-9e13-4c6d-9cd8-c94eff0e663c",
+      "name": "Collector's Deck - Eyes of the Heart",
+      "short_desc": "Collector's deck",
+      "tab": "collectordeck",
+      "price": 2500,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryStarterPack: Collector's Deck - Eyes of the Heart"
+    },
+    {
+      "template_guid": "c547ecaf-240b-459d-bf3e-3ee5ab69b3df",
+      "name": "Collector's Deck - Hero of Legend",
+      "short_desc": "Collector's deck",
+      "tab": "collectordeck",
+      "price": 2500,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryStarterPack: Collector's Deck - Hero of Legend"
+    },
+    {
+      "template_guid": "9bcd6ba9-b49d-48a3-9929-2f26f603dea2",
+      "name": "Collector's Deck - Locke of the Pack",
+      "short_desc": "Collector's deck",
+      "tab": "collectordeck",
+      "price": 2500,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryStarterPack: Collector's Deck - Locke of the Pack"
+    },
+    {
+      "template_guid": "030b84da-6adb-4177-bd1d-8602dd3be2fe",
+      "name": "Collector's Deck - Lord Blightbark",
+      "short_desc": "Collector's deck",
+      "tab": "collectordeck",
+      "price": 2500,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryStarterPack: Collector's Deck - Lord Blightbark"
+    },
+    {
+      "template_guid": "f5b4a7b1-8b5e-476d-800c-d37090c51c0d",
+      "name": "Collector's Deck - Lyvaanth",
+      "short_desc": "Collector's deck",
+      "tab": "collectordeck",
+      "price": 2500,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryStarterPack: Collector's Deck - Lyvaanth"
+    },
+    {
+      "template_guid": "d9d666b9-8f78-42b7-9f56-9ff811d8aede",
+      "name": "Collector's Deck - Sunsoul Phoenix",
+      "short_desc": "Collector's deck",
+      "tab": "collectordeck",
+      "price": 2500,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryStarterPack: Collector's Deck - Sunsoul Phoenix"
+    },
+    {
+      "template_guid": "62abd6a9-f58c-4a27-9d93-98cde9d093fb",
+      "name": "Collector's Deck - The Librarian",
+      "short_desc": "Collector's deck",
+      "tab": "collectordeck",
+      "price": 2500,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryStarterPack: Collector's Deck - The Librarian"
+    },
+    {
+      "template_guid": "74056486-159e-410e-bf43-a64aff192882",
+      "name": "Frost Ring Battleboard",
+      "short_desc": "Battleboard",
+      "tab": "special",
+      "price": 3000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryGameboardData: Frost Ring Battleboard"
+    },
+    {
+      "template_guid": "b0ad3a14-c03b-4182-8d27-d5ac75bba00e",
+      "name": "Forest Battleboard",
+      "short_desc": "Battleboard",
+      "tab": "special",
+      "price": 3000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryGameboardData: Forest Battleboard"
+    },
+    {
+      "template_guid": "110cfbf9-77e7-45dd-9705-aabf3fd82690",
+      "name": "Castle Battleboard",
+      "short_desc": "Battleboard",
+      "tab": "special",
+      "price": 3000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryGameboardData: Castle Battleboard"
+    },
+    {
+      "template_guid": "2041a4f9-81b7-41a9-9fe6-94e437bbc2ac",
+      "name": "Coastline Battleboard",
+      "short_desc": "Battleboard",
+      "tab": "special",
+      "price": 3000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryGameboardData: Coastline Battleboard"
+    },
+    {
+      "template_guid": "b1de5e34-321c-4cbd-9792-5484486603e1",
+      "name": "Canyon Battleboard",
+      "short_desc": "Battleboard",
+      "tab": "special",
+      "price": 3000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryGameboardData: Canyon Battleboard"
+    },
+    {
+      "template_guid": "0051e7a4-7804-46ce-819f-31ff3298c753",
+      "name": "Highlands Battleboard",
+      "short_desc": "Battleboard",
+      "tab": "special",
+      "price": 3000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryGameboardData: Highlands Battleboard"
+    },
+    {
+      "template_guid": "6f747841-1668-43af-ac43-362340bb0367",
+      "name": "Jungle Battleboard",
+      "short_desc": "Battleboard",
+      "tab": "special",
+      "price": 3000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryGameboardData: Jungle Battleboard"
+    },
+    {
+      "template_guid": "9e719a07-30be-44e4-937d-e34ba7bcae6b",
+      "name": "Boat Battleboard",
+      "short_desc": "Battleboard",
+      "tab": "special",
+      "price": 3000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryGameboardData: Boat Battleboard"
+    },
+    {
+      "template_guid": "5fcafd29-d681-4de1-bd56-5f22566b7015",
+      "name": "Wizard Battleboard",
+      "short_desc": "Battleboard",
+      "tab": "special",
+      "price": 3000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryGameboardData: Wizard Battleboard"
+    },
+    {
+      "template_guid": "d1ebb4ec-00f4-4920-947f-7b051dd2ffaa",
+      "name": "Frostlock Battleboard",
+      "short_desc": "Battleboard",
+      "tab": "special",
+      "price": 3000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryGameboardData: Frostlock Battleboard"
+    },
+    {
+      "template_guid": "10b0e374-d304-4dad-b493-7ba4493c76be",
+      "name": "Badlands Battleboard",
+      "short_desc": "Battleboard",
+      "tab": "special",
+      "price": 3000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryGameboardData: Badlands Battleboard"
+    },
+    {
+      "template_guid": "459cc7c5-4b46-4db8-993f-3292114aabf6",
+      "name": "Dream Forest Battleboard",
+      "short_desc": "Battleboard",
+      "tab": "special",
+      "price": 3000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryGameboardData: Dream Forest Battleboard"
+    },
+    {
+      "template_guid": "a46ced79-7965-4762-ab5c-508c9a01bf63",
+      "name": "Sanctum Of Suffering Battleboard",
+      "short_desc": "Battleboard",
+      "tab": "special",
+      "price": 3000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryGameboardData: Sanctum Of Suffering Battleboard"
+    },
+    {
+      "template_guid": "220ab006-f86d-4c0b-abf1-cf8713a59e33",
+      "name": "Great Machine Graveyard Battleboard",
+      "short_desc": "Battleboard",
+      "tab": "special",
+      "price": 3000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryGameboardData: Great Machine Graveyard Battleboard"
+    },
+    {
+      "template_guid": "5e338ab1-da47-41ce-b980-4020f1b5b4fc",
+      "name": "Full Set: Shards of Fate",
+      "short_desc": "Every card from Shards of Fate",
+      "tab": "special",
+      "price": 5000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryCardPack: Shards of Fate Full Set"
+    },
+    {
+      "template_guid": "17e0a0ff-7ec3-4ed7-a261-adb4dcfd6625",
+      "name": "Full Set: Shattered Destiny",
+      "short_desc": "Every card from Shattered Destiny",
+      "tab": "special",
+      "price": 5000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryCardPack: Shattered Destiny Full Set"
+    },
+    {
+      "template_guid": "3bdc41b5-c265-4616-812e-9f1965787c33",
+      "name": "Full Set: Armies of Myth",
+      "short_desc": "Every card from Armies of Myth",
+      "tab": "special",
+      "price": 5000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryCardPack: Armies of Myth Full Set"
+    },
+    {
+      "template_guid": "5bdb9ea1-9e03-42af-a23c-6968fff55ce5",
+      "name": "Full Set: Primal Dawn",
+      "short_desc": "Every card from Primal Dawn",
+      "tab": "special",
+      "price": 5000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryCardPack: Primal Dawn Full Set"
+    },
+    {
+      "template_guid": "37fb3559-6f2e-4f53-b6d7-05c28c6c075d",
+      "name": "Full Set: Herofall",
+      "short_desc": "Every card from Herofall",
+      "tab": "special",
+      "price": 5000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryCardPack: Herofall Full Set"
+    },
+    {
+      "template_guid": "ef3b7d2f-92f4-48a1-bc4f-075be5a02438",
+      "name": "Full Set: Scars of War",
+      "short_desc": "Every card from Scars of War",
+      "tab": "special",
+      "price": 5000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryCardPack: Scars of War Full Set"
+    },
+    {
+      "template_guid": "1d9320d0-f5e1-448d-ac39-a46836d8886e",
+      "name": "Full Set: Frostheart",
+      "short_desc": "Every card from Frostheart",
+      "tab": "special",
+      "price": 5000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryCardPack: Frostheart Full Set"
+    },
+    {
+      "template_guid": "a1569225-683a-4c84-92fa-238e4f8821ad",
+      "name": "Full Set: Dead of Winter",
+      "short_desc": "Every card from Dead of Winter",
+      "tab": "special",
+      "price": 5000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryCardPack: Set 8 Full Set"
+    },
+    {
+      "template_guid": "56ca0060-48ea-401d-9526-f1f7bc7cbe88",
+      "name": "Full Set: Doombringer",
+      "short_desc": "Every card from Doombringer",
+      "tab": "special",
+      "price": 5000,
+      "currency": "Gold",
+      "purchase_limit": 1,
+      "_source": "InventoryCardPack: Set 9 Full Set"
+    },
+    {
+      "template_guid": "949a018e-8360-4623-b3da-dc915dcd1b38",
+      "name": "Kismet's Reverie I",
+      "short_desc": "Kismet pack",
+      "tab": "special",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryTreasureChest: Kismet's Reserve Pack"
+    },
+    {
+      "template_guid": "8d0947d9-91f1-4258-a965-d08dc97a8966",
+      "name": "Kismet's Reverie II",
+      "short_desc": "Kismet pack",
+      "tab": "special",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryTreasureChest: Kismet's Reserve Oni Pack"
+    },
+    {
+      "template_guid": "c37d2d3b-a6ec-42bd-b75c-5faf27441dca",
+      "name": "Kismet's Reverie III",
+      "short_desc": "Kismet pack",
+      "tab": "special",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryTreasureChest: Kismet's Boonberries Pack"
+    },
+    {
+      "template_guid": "d49e1966-be68-4f17-a6eb-6cd11d43ada0",
+      "name": "Kismet's Reverie IV",
+      "short_desc": "Kismet pack",
+      "tab": "special",
+      "price": 1000,
+      "currency": "Gold",
+      "_source": "InventoryTreasureChest: Kismet's Vampire Pack"
+    },
+    {
+      "template_guid": "cbf0f839-6827-4d94-b9c5-2a38389cf6a7",
+      "name": "Set 9 Draft Pack",
+      "short_desc": "Doombringer draft pack",
+      "tab": "special",
+      "price": 500,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Doombringer Sharded Draft Pack (Only Generates 2 colors)"
+    },
+    {
+      "template_guid": "7b8390fd-7d3d-44d4-b285-1aeae3aef98b",
+      "name": "AZ1 Campaign Booster",
+      "short_desc": "PvE campaign cards",
+      "tab": "special",
+      "price": 300,
+      "currency": "Gold",
+      "_source": "InventoryTreasureChest: Howling Plains Pack"
+    },
+    {
+      "template_guid": "d77471f5-7b32-4464-9552-c992a38fb4be",
+      "name": "AZ2 Campaign Booster",
+      "short_desc": "PvE campaign cards",
+      "tab": "special",
+      "price": 300,
+      "currency": "Gold",
+      "_source": "InventoryTreasureChest: Alachian Sea Pack"
+    },
+    {
+      "template_guid": "e296f8e0-680f-41e3-a764-7e9953b10be5",
+      "name": "Dwarf Tribe Booster",
+      "short_desc": "Dwarf-themed cards",
+      "tab": "special",
+      "price": 150,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Dwarf Starter Trials Pack"
+    },
+    {
+      "template_guid": "4625f688-2987-4c57-8a8c-c1ab5b5ea744",
+      "name": "Human Tribe Booster",
+      "short_desc": "Human-themed cards",
+      "tab": "special",
+      "price": 150,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Human Starter Trials Pack"
+    },
+    {
+      "template_guid": "6307c815-0473-4f86-8967-2e3401730f74",
+      "name": "Orc Tribe Booster",
+      "short_desc": "Orc-themed cards",
+      "tab": "special",
+      "price": 150,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Orc Starter Trials Pack"
+    },
+    {
+      "template_guid": "91c91bad-30a9-4c0c-9951-7c9432345da7",
+      "name": "Shin'hare Tribe Booster",
+      "short_desc": "Shin'hare-themed cards",
+      "tab": "special",
+      "price": 150,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Shin'hare Starter Trials Pack"
+    },
+    {
+      "template_guid": "1e94b92a-a7a9-4843-88a9-6c51a6699b79",
+      "name": "Coyotle Tribe Booster",
+      "short_desc": "Coyotle-themed cards",
+      "tab": "special",
+      "price": 150,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Coyotle Starter Trials Pack"
+    },
+    {
+      "template_guid": "dde85dd8-9b2d-4b66-a2d6-11d4df385e7f",
+      "name": "Elf Tribe Booster",
+      "short_desc": "Elf-themed cards",
+      "tab": "special",
+      "price": 150,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Elf Starter Trials Pack"
+    },
+    {
+      "template_guid": "aa12781d-effa-47fc-8306-b1a4c491551f",
+      "name": "Necrotic Tribe Booster",
+      "short_desc": "Necrotic-themed cards",
+      "tab": "special",
+      "price": 150,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Necrotic Starter Trials Pack"
+    },
+    {
+      "template_guid": "d4de5a3a-6eba-4ebc-856d-1f161c675c83",
+      "name": "Vennen Tribe Booster",
+      "short_desc": "Vennen-themed cards",
+      "tab": "special",
+      "price": 150,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Vennen Starter Trials Pack"
+    },
+    {
+      "template_guid": "3346fb56-d7e0-424d-906b-7c19352b64a2",
+      "name": "Common Only Booster",
+      "short_desc": "Common cards only",
+      "tab": "special",
+      "price": 50,
+      "currency": "Gold",
+      "_source": "InventoryCardPack: Common Only Booster Pack"
+    }
+  ]
+}

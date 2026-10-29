@@ -354,9 +354,11 @@ def verify_profile_response():
 def verify_store_response():
     items = [
         {"n": "Test Booster", "s": "A test booster pack", "price": 200,
-         "currency": "Gold", "template_guid": TEST_GUID, "t": "ShopBoosterTab"},
+         "currency": "Gold", "template_guid": TEST_GUID, "t": "ShopBoosterTab",
+         "hide": True},
         {"n": "Starter Deck", "s": "Beginner deck", "price": 1000,
-         "currency": "Platinum", "template_guid": TEST_GUID2, "t": "collectordeck"},
+         "currency": "Platinum", "template_guid": TEST_GUID2, "t": "collectordeck",
+         "limit": 1},
     ]
     check("encode_store_response", encoder.encode_store_response(items))
     check("encode_store_response_empty", encoder.encode_store_response([]))

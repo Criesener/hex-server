@@ -361,9 +361,11 @@ def gen_encode_store_response():
     from hconnect_server import encode_store_response
     items = [
         {"n": "Test Booster", "s": "A test booster pack", "price": 200,
-         "currency": "Gold", "template_guid": TEST_GUID, "t": "ShopBoosterTab"},
+         "currency": "Gold", "template_guid": TEST_GUID, "t": "ShopBoosterTab",
+         "hide": True},
         {"n": "Starter Deck", "s": "Beginner deck", "price": 1000,
-         "currency": "Platinum", "template_guid": TEST_GUID2, "t": "collectordeck"},
+         "currency": "Platinum", "template_guid": TEST_GUID2, "t": "collectordeck",
+         "limit": 1},
     ]
     save_golden("encode_store_response", encode_store_response(items))
 
