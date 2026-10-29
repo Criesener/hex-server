@@ -174,7 +174,7 @@ def db_reset_account(user_id, conn=None):
         "            AND ct.is_pve=0)", (uid,))
     for table in ("arena_state", "campaigns", "champions",
                   "decks", "emails", "fra_challengers",
-                  "reckoning_flags",
+                  "reckoning_flags", "party_cap_overrides",
                   "friend_requests", "friends", "ignored_players",
                   "player_inventory", "stardust", "store_purchases",
                   "treasure_chests", "user_prefs", "chat_messages",

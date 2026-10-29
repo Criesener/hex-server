@@ -36,8 +36,17 @@ no usable party slots, which is why mercenaries were unreachable before.
 
 Profile flags reach the client in the login profile stream as a standalone
 `List<Reckoning.Profile.Messages.FlagData>` (`Name`, `Progress`, `Maximum`,
-`Completed`). They are stored in `profile_flags` and only read at login, so a
+`Completed`). They are stored in `reckoning_flags` and only read at login, so a
 changed cap applies after the next login.
+
+The server derives the cap at every login (`mercenaries.sync_party_cap`): one
+slot per distinct mercenary (`InventoryMercenaryData` item) the player owns,
+at most 4 (the flag's Maximum; the client adds one slot per point without
+capping it, then caps by race). A player without mercenaries and without a
+flag gets no flag. `!partycap <0-4>` stores an override in
+`party_cap_overrides` that wins over the derived value; `!partycap auto`
+removes it. This follows the HEX Revival mod (`Mercenaries.RefreshPartyCap`:
+mercenaries earned, max 4).
 
 ### How slots are unlocked (not implemented)
 
@@ -51,8 +60,8 @@ unlock happened on the retail servers:
 | `b4d46c49-02d3-4df1-933d-6a265845124f` | AZ2 Node 9, Gaaffaa Bluff | Katsuhiro `540d0988-085c-4d62-8eb6-16361d1b3612` |
 | `537f9890-1d2f-42ed-94c5-cd1f1eef589f` | AZ2 Node 30, Cliffs of Nore | Augustine `1da0e36f-cb71-432d-a282-8c4a2a01c0e2` |
 
-The server does not raise `CAMP_PARTYCAP` yet; use `!partycap` to test.
-Open questions: only two recruitment fights exist in the client data while
+Earning one of these recruits raises the cap through the owned-mercenary
+count above. Open questions: only two recruitment fights exist in the client data while
 three slots are possible, so the third unlock is unknown, and whether the
 recruit item itself was granted is inferred from the "you're hired"
 conversations.
@@ -100,20 +109,59 @@ The campaign `start` SendEvent carries the choice as
 `JoinSession` still reports the champion's own deck, so the server remembers
 the choice per campaign (`campaign._active_mercenary`) and
 `resolve_battle_config` substitutes the mercenary's template, name, starting
-health, no talents, and the party member's saved deck template. Deck
-equipment does not apply to mercenary decks.
+health, no talents, and the party member's saved deck template.
+
+### Mercenary equipment
+
+The party deck template's `Equip` slots (`deck_templates.template_equipment`,
+in `EEquipmentType` order Head, Chest, Gloves, Feet, Weapon, Trinket) are the
+mercenary's battle equipment, like HEX Revival's `Decks.FromTemplate`. Items
+the player does not own and a second item of one type are dropped
+(`equipment.sanitize_deck_equipment`). Battle setup then uses the same path
+as a champion deck: cards are swapped for their equipment-modified variants
+(`equipped_variant`) and the battle HUD gets `EquipmentSet`.
+
+## Party passives
+
+Every `MercenaryTemplate` has `m_PartyPassiveAbilities` (almost all "At the
+start of the game" / "Before the start of the game" triggers). In the
+authoritative session (`AuthoritativeSessionBase.LoadPlayerDeck`), the game
+server gets `DeckChampInfo.PartyMembers` — the party's MercenaryTemplate ids,
+each followed `Upgrade` times through `m_UpgradeTemplateId`
+(`MercenaryTemplate.GetUpgradeTemplate`) — and
+`InstantiateChampionCard`/`InstantiateMercenaryCard` add every member's party
+abilities to the player's hidden simulacrum card, for the champion and for a
+fighting mercenary alike.
+
+`DeckChampInfo` only travels inside `PlayerDeckChampInfo` in
+`StartEncounterRequestArgs`, a campaign-server-to-game-server request; the
+client never sends or receives it (no client code builds the request, and
+`StandaloneSession.HasDeckAndChampInfo` returns `partyMembers = null`). Our
+server is the game server, so it applies the passives itself:
+
+- `mercenaries.party_member_templates` is our `PartyMembers`;
+  `party_passive_ability_guids` flattens their party abilities (skipping
+  abilities missing from the client data). The MercenaryTemplate records are
+  read from `Records/MercenaryTemplate.jsonl` with the seed parser, because
+  the strict `RecordStore` rejects their unquoted `m_ShardAlignment` keys.
+- `resolve_battle_config` returns `party_members` and
+  `party_passive_abilities` for the campaign's champion.
+- Battle setup appends the passives to the fighter's champion ability list
+  (`_player_champ_abilities`, after its own powers). The RulesPort discovers
+  their PreGame/GameStarted triggers from that list, like talent triggers,
+  and the client sees them in the champion's `CardUpdated` ability list.
 
 ## Testing
 
 Developer commands (require `HEX_PROFILE_FLAGS=allowcon`):
 
 - `!additem <name>` — grant any inventory item, e.g. `!additem B.E.B.O.`
-- `!partycap <0-4>` — set `CAMP_PARTYCAP` directly (applies after relogin)
+- `!partycap <0-4>` — override `CAMP_PARTYCAP` (applies after relogin);
+  `!partycap auto` returns it to the owned-mercenary count
 
 ## Not implemented
 
-- Raising `CAMP_PARTYCAP` from the AZ2 recruitment encounters (see above).
-- Party passives (`m_PartyPassiveAbilities`) for non-active party members.
+- Granting the AZ2 recruits themselves (see above).
 - Upgrades: the profile `mercupd` action (`ProfileMercActionReq`:
   `MercID`, `ChallengeSuccess`, `PayGoldAmount`), the login
   `List<MercLeveling>`, and dungeon mercenary nodes (`/merc_node_ch`,

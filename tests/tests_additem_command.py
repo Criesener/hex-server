@@ -104,6 +104,9 @@ def test_partycap_sets_flag():
     assert "set to 3" in result, result
     assert mercenaries.get_flags(db._db, 9306) == [("CAMP_PARTYCAP", 3, 4, 0)]
     assert "Usage" in _command(handler, "!partycap")
+    # "auto" hands the cap back to the owned mercenaries (none here).
+    assert "follow owned mercenaries (0)" in _command(handler, "!partycap auto")
+    assert mercenaries.get_flags(db._db, 9306) == [("CAMP_PARTYCAP", 0, 4, 0)]
 
 
 def test_addchest_creates_set_chests():

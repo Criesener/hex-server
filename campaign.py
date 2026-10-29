@@ -9731,6 +9731,20 @@ def resolve_battle_config(handler, db, camp_id, session_name):
         player_champ_name = mercenary["name"]
         player_starting_health = mercenary["starting_health"]
         player_talents_json = "[]"
+    # Party passives: every party member's MercenaryTemplate (at its upgrade
+    # level) adds its party abilities to whoever fights, the champion or one
+    # of its mercenaries (AuthoritativeSessionBase.InstantiateChampionCard /
+    # InstantiateMercenaryCard with DeckChampInfo.PartyMembers).
+    party_members = []
+    party_passive_abilities = []
+    if camp_id and profile:
+        from services import mercenaries as _mercenaries
+        champion_id = pve_db.db_campaign_champion_id(camp_id, conn=db)
+        if champion_id:
+            party_members = _mercenaries.party_member_templates(
+                db, profile.get("id"), champion_id)
+            party_passive_abilities = _mercenaries.party_passive_ability_guids(
+                db, profile.get("id"), champion_id)
     return {
         "scene_guid": scene_guid,
         "ai_deck_guid": ai_deck_guid,
@@ -9756,6 +9770,9 @@ def resolve_battle_config(handler, db, camp_id, session_name):
         "fortune_ability_guids": fortune_ability_guids,
         "fortune_starting_hand_bonus": fortune_starting_hand_bonus,
         "mercenary_deck_cards": mercenary["deck_cards"] if mercenary else None,
+        "mercenary_equipment": mercenary["equipment"] if mercenary else [],
+        "party_members": party_members,
+        "party_passive_abilities": party_passive_abilities,
         # Template GUIDs added to the player's deck for this battle (the
         # Lost Gnomes in tow and their Primal Shards, az1_node_variants.json
         # "escorts").

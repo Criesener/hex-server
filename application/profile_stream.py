@@ -90,7 +90,14 @@ class ProfileStreamMixin:
         # Saved deck templates and mercenary parties.
         self._push_mercenary_stream(p)
         # The single List<FlagData>: Reckoning account flags, including the
-        # mercenary party cap (CAMP_PARTYCAP).
+        # mercenary party cap (CAMP_PARTYCAP), which follows the mercenaries
+        # owned (max 4) unless !partycap pinned it.
+        try:
+            from services import mercenaries
+            mercenaries.sync_party_cap(_db, p["id"])
+            _db.commit()
+        except Exception as exc:
+            log_req(f"    CAMP_PARTYCAP sync failed: {exc}")
         self._push_reckoning_flags_stream(p)
         # Account level: grant level-up sleeves before the inventory list is
         # built, then send the AccountXpCap the account window reads.

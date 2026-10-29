@@ -65,6 +65,31 @@ def template_cards(data):
     return cards
 
 
+def template_equipment(data):
+    """Return the equipped item GUIDs of ProfileDeckTemplate bytes.
+
+    ``Equip`` is ``{varint EEquipmentType, GUID}*`` after the name, champion
+    and sleeve.  The GUIDs come back in EEquipmentType order (Head, Chest,
+    Gloves, Feet, Weapon, Trinket), the order a mercenary's party deck
+    copies them into its battle deck; empty slots are left out.
+    """
+    try:
+        length, pos = _read_varint(data, 0)
+        pos += length + 32
+        count, pos = _read_varint(data, pos)
+        slots = {}
+        for _ in range(count):
+            slot, pos = _read_varint(data, pos)
+            guid, pos = _read_guid(data, pos)
+            if len(data) < pos:
+                return []
+            if guid != "00000000-0000-0000-0000-000000000000":
+                slots[slot] = guid
+    except (IndexError, TypeError, struct.error):
+        return []
+    return [slots[slot] for slot in sorted(slots)]
+
+
 def template_name(data):
     """Return the deck name stored at the start of ProfileDeckTemplate bytes."""
     try:

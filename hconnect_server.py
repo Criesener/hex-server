@@ -17200,6 +17200,8 @@ class HCPHandler(ProfileStreamMixin):
             player_champ_id = game._new_card_id()
             ai_champ_id = game._new_card_id()
             player_talents_json = "[]"
+            mercenary_equipment = []
+            party_passive_abilities = []
 
             is_campaign = (session.session_name or "").startswith("camp_")
             is_practice = (session.session_name or "").startswith("Session-")
@@ -17243,6 +17245,12 @@ class HCPHandler(ProfileStreamMixin):
                 self._campaign_fortune_starting_hand_bonus = int(
                     cfg.get("fortune_starting_hand_bonus", 0) or 0)
                 mercenary_deck_cards = cfg.get("mercenary_deck_cards")
+                mercenary_equipment = list(cfg.get("mercenary_equipment") or ())
+                party_passive_abilities = list(
+                    cfg.get("party_passive_abilities") or ())
+                if cfg.get("party_members"):
+                    log_req(f"    Campaign party: members={cfg['party_members']} "
+                            f"passives={party_passive_abilities}")
                 deck_extra_cards = list(cfg.get("deck_extra_cards") or ())
                 if deck_extra_cards:
                     log_req(f"    Campaign deck extras: {len(deck_extra_cards)} cards")
@@ -17354,6 +17362,14 @@ class HCPHandler(ProfileStreamMixin):
             # isn't granted via a talent.
             from pvp_db import db_get_champion_ability_guids as _db_champ_ab
             for ag in _db_champ_ab(player_champ_guid):
+                rid = game_engine.ResourceId.from_str(ag)
+                if rid not in pl_abilities:
+                    pl_abilities.append(rid)
+            # Campaign party passives belong to the fighter (champion or
+            # mercenary) like its own powers: the RulesPort discovers their
+            # GameStarted/PreGame triggers from this list.  Appended last so
+            # the champion's own power indices are unchanged.
+            for ag in party_passive_abilities:
                 rid = game_engine.ResourceId.from_str(ag)
                 if rid not in pl_abilities:
                     pl_abilities.append(rid)
@@ -17555,9 +17571,12 @@ class HCPHandler(ProfileStreamMixin):
             # templates the client data provides for each combination.
             from profile_db import db_deck_equipment
             from services.equipment import equipped_variant
-            deck_equipment = (db_deck_equipment(deck_db_id, conn=_db)
-                              if deck_db_id and not (is_campaign and mercenary_deck_cards)
-                              else [])
+            # A mercenary plays the equipment of its party deck template.
+            if is_campaign and mercenary_deck_cards:
+                deck_equipment = list(mercenary_equipment)
+            else:
+                deck_equipment = (db_deck_equipment(deck_db_id, conn=_db)
+                                  if deck_db_id else [])
             if deck_equipment:
                 log_req(f"    Deck equipment: {deck_equipment}")
             if deck_rows and deck_rows[0]:

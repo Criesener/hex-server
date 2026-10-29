@@ -549,7 +549,7 @@ def _full_help_lines():
         "!account-cleanup — reset your account, keeping PvE and alt-art cards",
         "!issue <title> — open a prefilled GitHub issue with session diagnostics",
         "!additem <item name> [xN] — add an inventory item (mercenary, equipment, chest...)",
-        "!partycap <0-4> — set mercenary party slots (applies after relog)",
+        "!partycap <0-4|auto> — override mercenary party slots (applies after relog)",
         "!addchest <rarity> [set] [xN] — add booster treasure chests (applies after relog)",
         "!addgold <amount> — add gold, e.g. to spin the Wheels of Fate",
         "!game_end victory|defeat — end the campaign battle (test win/loss)",
@@ -868,17 +868,27 @@ def _cmd_addgold(handler, args):
 
 
 def _cmd_partycap(handler, args):
-    """Set the mercenary party-slot flag: !partycap <0-4>.
+    """Override the mercenary party-slot flag: !partycap <0-4|auto>.
 
-    The client reads CAMP_PARTYCAP from the login profile stream, so the new
-    value applies after the next login.
+    Without an override CAMP_PARTYCAP follows the mercenaries the player
+    owns (max 4); ``auto`` removes the override.  The client reads the flag
+    from the login profile stream, so the new value applies after the next
+    login.
     """
     from services import mercenaries
-    if not args or not args[0].isdigit():
-        return "Usage: !partycap <0-4>  (then log out and back in)"
-    slots = max(0, min(4, int(args[0])))
-    mercenaries.set_flag(hconnect_server._db, handler.user_profile["id"],
-                         mercenaries.PARTY_CAP_FLAG, slots, 4)
+    usage = "Usage: !partycap <0-4|auto>  (then log out and back in)"
+    if not args:
+        return usage
+    user_id = handler.user_profile["id"]
+    if args[0].lower() == "auto":
+        slots = mercenaries.set_party_cap_override(hconnect_server._db, user_id, None)
+        hconnect_server._db.commit()
+        return (f"Mercenary party slots follow owned mercenaries ({slots}); "
+                "log out and back in to apply")
+    if not args[0].isdigit():
+        return usage
+    slots = mercenaries.set_party_cap_override(
+        hconnect_server._db, user_id, int(args[0]))
     hconnect_server._db.commit()
     return f"Mercenary party slots set to {slots}; log out and back in to apply"
 

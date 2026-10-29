@@ -14,9 +14,14 @@ answers ``partysave`` with the saved ChampionParty as JSON.
 import io
 import json
 import struct
+import threading
 from binascii import hexlify
 
 PARTY_CAP_FLAG = "CAMP_PARTYCAP"
+# The flag's Maximum.  The client adds one free slot per point of Progress
+# without capping it (UIPartyMercenarySelector.LoadPartyMembers), so the
+# server caps the earned slots itself.
+MAX_PARTY_CAP = 4
 ZERO_GUID = "00000000-0000-0000-0000-000000000000"
 FLAG_DATA_TYPE = "Reckoning.Profile.Messages.FlagData"
 PARTY_TYPE = "Game.Shared.Campaign.Messages.CampSysGeneral+Party+ChampionParty"
@@ -191,10 +196,12 @@ def battle_mercenary(db, user_id, champion_id, item_guid):
 
     ``item_guid`` is the InventoryMercenaryData GUID the client sends as
     ``merc=<guid>`` in the campaign 'start' event.  Returns the champion
-    template, name, starting health, and the party member's deck cards, or
-    None when the mercenary has no saved deck.
+    template, name, starting health, the party member's deck cards and the
+    equipment its party deck template equips, or None when the mercenary has
+    no saved deck.
     """
     from services import deck_templates
+    from services.equipment import sanitize_deck_equipment
     item_guid = str(item_guid or "").lower()
     if not item_guid or item_guid == ZERO_GUID:
         return None
@@ -214,9 +221,182 @@ def battle_mercenary(db, user_id, champion_id, item_guid):
         (champion_guid,)).fetchone()
     if not row:
         return None
+    # The template's Equip slots are played like a deck's equipment
+    # (HEX Revival Decks.FromTemplate), limited to items the player owns.
+    equipment = sanitize_deck_equipment(
+        db, user_id, deck_templates.template_equipment(template[2]))
     return {"champion_guid": champion_guid, "name": row[0],
             "starting_health": int(row[1] or 20),
-            "deck_cards": deck_templates.template_cards(template[2])}
+            "deck_cards": deck_templates.template_cards(template[2]),
+            "equipment": equipment}
+
+
+# ── Party passives ────────────────────────────────────────────────────
+
+_TEMPLATES = None
+_TEMPLATES_LOCK = threading.Lock()
+
+
+def _load_mercenary_templates():
+    """Read MercenaryTemplate records: GUID -> party passives and upgrade.
+
+    The export writes ``m_ShardAlignment`` with unquoted keys, which the
+    strict ``RecordStore`` decoder rejects for most mercenaries; the seed
+    parser tolerates that form.
+    """
+    from gamedata import DEFAULT_RECORD_STORE
+    from AssetExtraction.gamedata_seed import parse_record
+    templates = {}
+    path = DEFAULT_RECORD_STORE.records_dir / "MercenaryTemplate.jsonl"
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return templates
+    for line in lines:
+        try:
+            value = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, str):
+            if value.lstrip().startswith("$$$"):
+                continue
+            value = parse_record(value)
+        if not isinstance(value, dict):
+            continue
+        guid = _guid(value.get("m_Id"))
+        if guid == ZERO_GUID:
+            continue
+        abilities = [_guid(entry.get("m_CardAbilityId"))
+                     for entry in value.get("m_PartyPassiveAbilities") or []
+                     if isinstance(entry, dict)]
+        upgrade = _guid(value.get("m_UpgradeTemplateId"))
+        templates[guid] = {
+            "name": value.get("m_Name") or "",
+            "party_abilities": [a for a in abilities if a != ZERO_GUID],
+            "upgrade": upgrade if upgrade != ZERO_GUID else None,
+        }
+    return templates
+
+
+def mercenary_templates():
+    """Cached MercenaryTemplate GUID -> {name, party_abilities, upgrade}."""
+    global _TEMPLATES
+    if _TEMPLATES is None:
+        with _TEMPLATES_LOCK:
+            if _TEMPLATES is None:
+                _TEMPLATES = _load_mercenary_templates()
+    return _TEMPLATES
+
+
+def upgraded_template_guid(template_guid, upgrade):
+    """Follow ``m_UpgradeTemplateId`` ``upgrade`` times
+    (MercenaryTemplate.GetUpgradeTemplate); stop at the last level."""
+    templates = mercenary_templates()
+    guid = str(template_guid or "").lower()
+    if guid not in templates:
+        return None
+    for _ in range(max(0, int(upgrade or 0))):
+        nxt = templates[guid]["upgrade"]
+        if not nxt or nxt not in templates:
+            break
+        guid = nxt
+    return guid
+
+
+def party_member_templates(db, user_id, champion_id):
+    """The champion's party as MercenaryTemplate GUIDs at their upgrade level.
+
+    This is the server's ``DeckChampInfo.PartyMembers``: the campaign server
+    hands it to the game session, which adds every member's party passives
+    to the fighter (AuthoritativeSessionBase.InstantiateChampionCard /
+    InstantiateMercenaryCard).  The client never receives the list.
+    """
+    members = []
+    for party in get_parties(db, user_id):
+        if party["ChampionID"] != int(champion_id or 0):
+            continue
+        for member in party["Members"]:
+            template = mercenary_template_guid(member["Mercenary"])
+            template = upgraded_template_guid(template, member["Upgrade"])
+            if template:
+                members.append(template)
+    return members
+
+
+def party_passive_ability_guids(db, user_id, champion_id):
+    """Party passive AbilityTemplate GUIDs of a champion's party, in order.
+
+    Abilities missing from the client's AbilityTemplates (unreleased
+    mercenaries) are skipped, like the seeded champion abilities.
+    """
+    from gamedata import DEFAULT_RECORD_STORE, ability_graph
+    templates = mercenary_templates()
+    abilities = []
+    for template in party_member_templates(db, user_id, champion_id):
+        for ability in templates[template]["party_abilities"]:
+            if ability in abilities:
+                continue
+            if ability_graph(DEFAULT_RECORD_STORE, ability) is None:
+                continue
+            abilities.append(ability)
+    return abilities
+
+
+# ── Party slots ───────────────────────────────────────────────────────
+
+def owned_mercenary_count(db, user_id):
+    """Distinct mercenaries (InventoryMercenaryData items) the player owns."""
+    from gamedata import DEFAULT_RECORD_STORE
+    count = 0
+    for (template_guid,) in db.execute(
+            "SELECT DISTINCT template_guid FROM player_inventory "
+            "WHERE user_id=? AND quantity>0", (user_id,)).fetchall():
+        item = DEFAULT_RECORD_STORE.get("InventoryItemData",
+                                        str(template_guid or "").lower())
+        if item is not None and item.field("m_MercenaryTemplateId"):
+            count += 1
+    return count
+
+
+def party_cap_override(db, user_id):
+    row = db.execute("SELECT slots FROM party_cap_overrides WHERE user_id=?",
+                     (user_id,)).fetchone()
+    return int(row[0]) if row else None
+
+
+def set_party_cap_override(db, user_id, slots):
+    """Pin CAMP_PARTYCAP to ``slots``; None returns it to owned mercenaries."""
+    if slots is None:
+        db.execute("DELETE FROM party_cap_overrides WHERE user_id=?", (user_id,))
+    else:
+        db.execute(
+            "INSERT INTO party_cap_overrides (user_id, slots) VALUES (?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET slots=excluded.slots",
+            (user_id, max(0, min(MAX_PARTY_CAP, int(slots)))))
+    return sync_party_cap(db, user_id)
+
+
+def party_cap(db, user_id):
+    """CAMP_PARTYCAP: the override, else one slot per mercenary owned (max 4)."""
+    override = party_cap_override(db, user_id)
+    if override is not None:
+        return override
+    return min(MAX_PARTY_CAP, owned_mercenary_count(db, user_id))
+
+
+def sync_party_cap(db, user_id):
+    """Store the current CAMP_PARTYCAP flag and return its slot count.
+
+    A player without mercenaries and without a flag keeps no flag at all,
+    so the login flag stream is unchanged for them.
+    """
+    slots = party_cap(db, user_id)
+    has_flag = db.execute(
+        "SELECT 1 FROM reckoning_flags WHERE user_id=? AND name=?",
+        (user_id, PARTY_CAP_FLAG)).fetchone()
+    if slots or has_flag:
+        set_flag(db, user_id, PARTY_CAP_FLAG, slots, MAX_PARTY_CAP)
+    return slots
 
 
 # ── Persistence ───────────────────────────────────────────────────────

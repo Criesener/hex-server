@@ -262,7 +262,8 @@ def test_battle_mercenary_resolves_party_member():
     _party_with_bebo(user_id, 4)
     merc = mercenaries.battle_mercenary(db._db, user_id, 4, BEBO_ITEM)
     assert merc == {"champion_guid": BEBO_TEMPLATE, "name": "B.E.B.O.",
-                    "starting_health": 22, "deck_cards": [CHARGE_BOT] * 4}, merc
+                    "starting_health": 22, "deck_cards": [CHARGE_BOT] * 4,
+                    "equipment": []}, merc
     assert mercenaries.battle_mercenary(db._db, user_id, 5, BEBO_ITEM) is None
     assert mercenaries.battle_mercenary(db._db, user_id, 4, mercenaries.ZERO_GUID) is None
 
@@ -286,6 +287,184 @@ def test_battle_config_uses_active_mercenary():
     assert cfg["mercenary_deck_cards"] == [CHARGE_BOT] * 4
 
 
+BAXOTH_ITEM = "509cbbda-cf20-4f76-a5e2-4d3052863226"
+BAXOTH_TEMPLATE = "3fa0bf88-88ff-4ca6-b048-c525fc7ff16a"
+BAXOTH_UPGRADE = "88fc1aa1-ed82-4421-8dac-3b60e0f3cd6d"
+BAXOTH_PASSIVE = "b7f96143-8ec3-3af5-5dc6-cf76de9bfcfa"
+KHAFRA_TEMPLATE = "685b4d03-da27-4a2b-95e3-f283b9864348"
+KHAFRA_UPGRADE = "eadd018d-3e7d-446a-a076-469b9d40807b"
+
+
+def _grant(user_id, template_guid, quantity=1):
+    db._db.execute(
+        "INSERT INTO player_inventory (user_id, template_guid, quantity) "
+        "VALUES (?,?,?)", (user_id, template_guid, quantity))
+    db._db.commit()
+
+
+def test_mercenary_plays_its_party_deck_equipment():
+    """The party deck template's Equip slots become the battle equipment and
+    swap the deck's cards for their equipment-modified variants."""
+    import io
+    import encoded_decks
+    from services import deck_templates
+    from services.equipment import (EQUIPMENT_SLOT_ORDER, equipment_slots,
+                                    equipped_variant)
+    base, key, variant = db._db.execute(
+        "SELECT base_guid, equipment_key, variant_guid FROM "
+        "equipment_card_variants WHERE equipment_key NOT LIKE '%,%' "
+        "LIMIT 1").fetchone()
+    user_id = _new_user(9410)
+    _grant(user_id, key)
+    unowned = db._db.execute(
+        "SELECT guid FROM equipment_templates WHERE equipment_type != "
+        "(SELECT equipment_type FROM equipment_templates WHERE guid=?) "
+        "LIMIT 1", (key,)).fetchone()[0]
+    buf = io.BytesIO()
+    encoded_decks.encode_profile_deck_template(
+        buf, "Geared", BEBO_TEMPLATE, mercenaries.ZERO_GUID,
+        [(base, 3, False, False, False)],
+        equipment_slots=equipment_slots(db._db, [key, unowned]))
+    data = buf.getvalue()
+    parsed = deck_templates.template_equipment(data)
+    assert set(parsed) == {key, unowned}, parsed
+    order = [EQUIPMENT_SLOT_ORDER.index(db._db.execute(
+        "SELECT equipment_type FROM equipment_templates WHERE guid=?",
+        (guid,)).fetchone()[0]) for guid in parsed]
+    assert order == sorted(order), parsed
+    template_id, _ = deck_templates.save_template(db._db, user_id, 0, data)
+    mercenaries.save_party(db._db, user_id, {
+        "ChampionID": 41, "Members": [{"Mercenary": BEBO_ITEM,
+                                       "DeckTemplate": template_id}]})
+    db._db.commit()
+    merc = mercenaries.battle_mercenary(db._db, user_id, 41, BEBO_ITEM)
+    # Only owned equipment is played.
+    assert merc["equipment"] == [key], merc
+    assert equipped_variant(db._db, base, merc["equipment"]) == variant
+    handler = hconnect_server.HCPHandler.__new__(hconnect_server.HCPHandler)
+    handler.user_profile = {"id": user_id}
+    campaign._active_mercenary[0] = (41, BEBO_ITEM)
+    try:
+        cfg = campaign.resolve_battle_config(handler, db._db, 0, "camp_0")
+    finally:
+        campaign._active_mercenary.pop(0, None)
+    assert cfg["mercenary_equipment"] == [key], cfg["mercenary_equipment"]
+
+
+def test_party_members_follow_upgrades():
+    assert mercenaries.upgraded_template_guid(BAXOTH_TEMPLATE, 0) == BAXOTH_TEMPLATE
+    assert mercenaries.upgraded_template_guid(BAXOTH_TEMPLATE, 1) == BAXOTH_UPGRADE
+    # Past the last level the highest template is kept.
+    assert mercenaries.upgraded_template_guid(BAXOTH_TEMPLATE, 5) == BAXOTH_UPGRADE
+    templates = mercenaries.mercenary_templates()
+    assert templates[BAXOTH_TEMPLATE]["party_abilities"] == [BAXOTH_PASSIVE]
+    # Khafra's upgrade carries a different party passive.
+    assert (templates[KHAFRA_TEMPLATE]["party_abilities"]
+            != templates[KHAFRA_UPGRADE]["party_abilities"])
+    user_id = _new_user(9411)
+    mercenaries.save_party(db._db, user_id, {
+        "ChampionID": 42,
+        "Members": [{"Mercenary": BAXOTH_ITEM, "Upgrade": 1},
+                    {"Mercenary": BEBO_ITEM}]})
+    db._db.commit()
+    assert mercenaries.party_member_templates(db._db, user_id, 42) == [
+        BAXOTH_UPGRADE, BEBO_TEMPLATE]
+    passives = mercenaries.party_passive_ability_guids(db._db, user_id, 42)
+    assert passives[0] == BAXOTH_PASSIVE and len(passives) == 2, passives
+    assert mercenaries.party_passive_ability_guids(db._db, user_id, 43) == []
+
+
+def test_party_passive_summons_at_game_start():
+    """Baxoth's "At the start of the game, summon a Dreadling" resolves
+    through the native GameStarted dispatch from the fighter's ability list,
+    exactly as the battle setup configures it."""
+    import game_engine
+    from rules_port.resolution import resolve_port_trigger
+    from rules_port.triggers import dispatch_native_trigger
+    from tests.tests_combat import HandlerStub, SessionStub
+    user_id = 5
+    if not db._db.execute("SELECT 1 FROM users WHERE id=5").fetchone():
+        _new_user(5)
+    mercenaries.save_party(db._db, user_id, {
+        "ChampionID": 44, "Members": [{"Mercenary": BAXOTH_ITEM}]})
+    db._db.execute("DELETE FROM game_cards WHERE session_id=1")
+    db._db.commit()
+    passives = mercenaries.party_passive_ability_guids(db._db, user_id, 44)
+    assert passives == [BAXOTH_PASSIVE], passives
+
+    handler = HandlerStub(db._db)
+    handler._player_champ_abilities = [
+        game_engine.ResourceId.from_str(guid) for guid in passives]
+    pl_t = game_engine.UID.make(244, 5)
+    ai_t = game_engine.UID.make(3, 1000)
+    game = game_engine.Game(1, pl_t, ai_t)
+    session = SessionStub()
+    bstate = {"stack": [], "player_health": 20, "ai_health": 20,
+              "_next_instance_id": 1,
+              "champ_map": {5: int(handler._player_champ_scid.uid.uid64),
+                            0: int(handler._ai_champ_scid.uid.uid64)}}
+    handler._current_bstate = bstate
+    dispatch_native_trigger(
+        db=db._db, handler=handler, game=game, session=session,
+        player_uid=pl_t, ai_uid=ai_t, battle_state=bstate,
+        event_type="GameStartedEvent", source_card_id=None,
+        source_player_id=user_id, data={"zones": ("hand", "warzone")})
+    assert len(bstate.get("stack") or []) == 1, bstate.get("stack")
+    while bstate.get("stack"):
+        resolve_port_trigger(handler, game, session, db._db, pl_t, ai_t,
+                             bstate, bstate["stack"].pop())
+    summoned = db._db.execute(
+        "SELECT ct.name FROM game_cards gc JOIN card_templates ct "
+        "ON ct.guid=gc.template_guid WHERE gc.session_id=1 AND gc.user_id=5 "
+        "AND gc.location='warzone'").fetchall()
+    assert [row[0] for row in summoned] == ["Dreadling"], summoned
+
+
+def test_battle_config_carries_party_passives():
+    user_id = _new_user(9412)
+    db._db.execute(
+        "INSERT INTO champions (id, user_id, champion_name) VALUES (?,?,?)",
+        (9412, user_id, "Partyer"))
+    db._db.execute(
+        "INSERT INTO campaigns (id, user_id, champion_id) VALUES (?,?,?)",
+        (9412, user_id, 9412))
+    mercenaries.save_party(db._db, user_id, {
+        "ChampionID": 9412, "Members": [{"Mercenary": BAXOTH_ITEM}]})
+    db._db.commit()
+    handler = hconnect_server.HCPHandler.__new__(hconnect_server.HCPHandler)
+    handler.user_profile = {"id": user_id}
+    handler._champion_health_by_guid = lambda guid: 20
+    handler._champion_starting_health = lambda race, cls: 20
+    cfg = campaign.resolve_battle_config(handler, db._db, 9412, "camp_9412")
+    assert cfg["party_members"] == [BAXOTH_TEMPLATE], cfg["party_members"]
+    assert cfg["party_passive_abilities"] == [BAXOTH_PASSIVE]
+
+
+def test_party_cap_follows_owned_mercenaries():
+    user_id = _new_user(9413)
+    # No mercenaries and no flag: nothing is written.
+    assert mercenaries.sync_party_cap(db._db, user_id) == 0
+    assert mercenaries.get_flags(db._db, user_id) == []
+    _grant(user_id, BEBO_ITEM)
+    _grant(user_id, BAXOTH_ITEM, 2)     # copies of one mercenary count once
+    _grant(user_id, "0382f729-7710-432b-b761-13677982dcd2")  # not a merc
+    assert mercenaries.owned_mercenary_count(db._db, user_id) == 2
+    assert mercenaries.sync_party_cap(db._db, user_id) == 2
+    assert mercenaries.get_flags(db._db, user_id) == [("CAMP_PARTYCAP", 2, 4, 0)]
+    from gamedata import DEFAULT_RECORD_STORE
+    for record in DEFAULT_RECORD_STORE.load("InventoryItemData"):
+        if record.field("m_MercenaryTemplateId") and record.guid not in (
+                BEBO_ITEM, BAXOTH_ITEM):
+            _grant(user_id, record.guid)
+    assert mercenaries.sync_party_cap(db._db, user_id) == 4
+    # !partycap overrides the derived cap until "auto" clears it.
+    assert mercenaries.set_party_cap_override(db._db, user_id, 1) == 1
+    assert mercenaries.sync_party_cap(db._db, user_id) == 1
+    assert mercenaries.get_flags(db._db, user_id) == [("CAMP_PARTYCAP", 1, 4, 0)]
+    assert mercenaries.set_party_cap_override(db._db, user_id, None) == 4
+    assert mercenaries.get_flags(db._db, user_id) == [("CAMP_PARTYCAP", 4, 4, 0)]
+
+
 if __name__ == "__main__":
     run("list writer matches chest encoder", test_list_writer_matches_chest_encoder)
     run("flag and party encoding", test_flag_and_party_encoding)
@@ -299,5 +478,10 @@ if __name__ == "__main__":
     run("existing database backfills mercenary champions", test_existing_database_backfills_mercenary_champions)
     run("battle mercenary resolves party member", test_battle_mercenary_resolves_party_member)
     run("battle config uses active mercenary", test_battle_config_uses_active_mercenary)
+    run("mercenary plays its party deck equipment", test_mercenary_plays_its_party_deck_equipment)
+    run("party members follow upgrades", test_party_members_follow_upgrades)
+    run("party passive summons at game start", test_party_passive_summons_at_game_start)
+    run("battle config carries party passives", test_battle_config_carries_party_passives)
+    run("party cap follows owned mercenaries", test_party_cap_follows_owned_mercenaries)
     if FAILURES:
         sys.exit(1)

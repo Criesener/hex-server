@@ -1279,6 +1279,14 @@ def db_starting_hand_size(race, champion_class, conn=None):
     return row[0] if row else None
 
 
+def db_campaign_champion_id(campaign_id, conn=None):
+    """Return the champion id owning a campaign."""
+    row = _connection(conn).execute(
+        "SELECT champion_id FROM campaigns WHERE id=?",
+        (campaign_id,)).fetchone()
+    return row[0] if row else None
+
+
 def db_campaign_champion_race(campaign_id, conn=None):
     """Return the race of the champion owning a campaign."""
     row = _connection(conn).execute(

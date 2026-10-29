@@ -415,6 +415,14 @@ DDL = [
         party_json TEXT NOT NULL DEFAULT '{}'
     )
     """,
+    # A developer override for CAMP_PARTYCAP (!partycap).  Without a row the
+    # cap follows the number of mercenaries the player owns.
+    """
+    CREATE TABLE IF NOT EXISTS party_cap_overrides (
+        user_id INTEGER PRIMARY KEY REFERENCES users(id),
+        slots INTEGER NOT NULL
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS equipment_card_variants (
         base_guid TEXT NOT NULL,
