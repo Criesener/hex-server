@@ -1065,6 +1065,28 @@ def db_adjust_user_currency(user_id, gold_delta=0, platinum_delta=0, conn=None):
     return (int(row[0] or 0), int(row[1] or 0)) if row else (0, 0)
 
 
+def db_spend_user_gold(user_id, amount, conn=None):
+    """Deduct *amount* gold only if the balance covers it.
+
+    Returns the new ``(gold, platinum)`` or None when the gold is missing.
+    The check and the deduction are one UPDATE, so two concurrent payments
+    can never overdraw the balance.
+    """
+    import db as _db_layer
+    connection = conn or _db_layer._db
+    cursor = connection.execute(
+        "UPDATE users SET gold=gold-? WHERE id=? AND gold>=?",
+        (int(amount), int(user_id), int(amount)))
+    if cursor.rowcount != 1:
+        return None
+    row = connection.execute(
+        "SELECT gold, platinum FROM users WHERE id=?", (int(user_id),)
+    ).fetchone()
+    if conn is None:
+        connection.commit()
+    return (int(row[0] or 0), int(row[1] or 0)) if row else None
+
+
 def db_next_card_instance_id(user_id, minimum=5000, conn=None):
     """Return the next safe physical-card instance ID for a user."""
     import db as _db_layer

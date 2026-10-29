@@ -10,5 +10,25 @@
   },
   "Node026": {
     "by_faction": {"Ardent": "Node026B", "Underworld": "Node026A"}
+  },
+  "_comment_faction_battles": "Issue #38: The Burk Heart (45) and Eagle Mesa (75) play a faction battle after their dialogue. The scenes are lettered (NODE 45A/45B, NODE 75 A/B) and have no SceneData item of their own. The faction follows the AI champion and the node's dialogues: Ardent fights the Necrophage Sensei (45A) and the Elimination Specialist (75 A, 'Ardent battle (Elimination Specialist)'), Underworld the Ashwood Maestro (45B) and the Earthcaller (75 B); confirmed on video by the HEX Revival notes (MHS Ardent/UW, Vandersveldt part 37).",
+  "Node045": {
+    "by_faction": {"Ardent": "Node045A", "Underworld": "Node045B"}
+  },
+  "Node075": {
+    "by_faction": {"Ardent": "Node075A", "Underworld": "Node075B"}
+  },
+  "_comment_gate": "Issue #38: a 'gate' node closes its neighbours (Brink Ridge: Node021/Node023/Node077) until PublicState.Data[flag] is set. While closed the node plays 'conversation' (the guard's 'Blockade - Step 2'). Its answers are 'choices' (ServerScriptEvents): 'battle' names the scene fought after the dialogue (NODE 19A, Human Guard; winning sets the flag), 'clears' sets the flag at once (sneak past), 'cost_gold' is paid at the answer and the answer is refused when the gold is missing (the 1,000 gold bribe; the client also requires it). 'after_dungeon' is a one-time battle on the node once the named dungeon is finished (NODE 19B1 Barricade Zombie after The Smoldering Dead, PH:22).",
+  "Node019": {
+    "gate": {
+      "flag": "blockade_cleared",
+      "conversation": "Blockade - Step 2",
+      "after_dungeon": {"dungeon": "The Smoldering Dead", "scene": "Node019B1"}
+    },
+    "choices": {
+      "choice_fight": {"battle": "Node019A"},
+      "choice_sneak": {"clears": true},
+      "choice_Bribe": {"clears": true, "cost_gold": 1000}
+    }
   }
 }

@@ -1,0 +1,114 @@
+{
+  "_comment": "AZ1 map rewards (issue #38 part B). Source: HEX Revival docs/PROGRESSION.md P:52-92 (video-backed reward windows) and P:201-207 (Shroom Hauses, LootTables2016), Progression.cs HausByNode. 'battles' maps an EncounterScene name (exact, or 'name_suffix' for the eight race variants of a Crayburn scene) to its payout: gold and xp are paid on every win, every 'first_win' record only once per champion (claimed by its record index, so the order is: currency, the scene's existing conditional Tamed capture, then first_win). A first_win record is a reward record of campaign._apply_encounter_end_rewards: chest_guid (a pack), card_guid, items (InventoryItemData GUIDs: equipment, deck sleeves, Stardust) or random_equipment (count of pieces rolled from the named pack's observed equipment table). Scenes not listed keep the seeded default. Kiss of the Princess at the Sea Witch needs the game event 'savedprincess', which the server does not track: not granted. 'shroom_hauses' gives each Haus scene its card set; 'event_costs' are campaign script events that cost currency (the Gaal readings: 'Pay 100 gold' in every Gaal conversation).",
+  "packs": {
+    "howling_plains": "7b8390fd-7d3d-44d4-b285-1aeae3aef98b"
+  },
+  "battles": [
+    {"scene": "AZ 1 - NODE 03 - WILD CUB", "gold": 150, "xp": 100},
+    {"scene": "AZ 1 - NODE 05 - MANIC MANTIS", "gold": 0, "xp": 200,
+     "first_win": [{"pack": "howling_plains"}]},
+    {"scene": "AZ 1 - NODE 06 - THE SEA WITCH UNFETTERED", "gold": 500, "xp": 250,
+     "first_win": [{"pack": "howling_plains"}]},
+    {"scene": "AZ 1 - NODE 06 B - SEA WITCH - NO FROG", "gold": 500, "xp": 250,
+     "first_win": [{"pack": "howling_plains"}]},
+    {"scene": "AZ 1 - NODE 09 - COCKATWICE CHICK", "gold": 200, "xp": 100,
+     "first_win": [{"card_guid": "3b18b39a-ff4f-4ecf-b7a8-c446f9d89bb0", "_name": "Effigy of Nulzann"}]},
+    {"scene": "AZ 1 - NODE 10 - SQUASHING PUMPKINS", "gold": 200, "xp": 100,
+     "first_win": [{"pack": "howling_plains"}]},
+    {"scene": "AZ 1 - NODE 13 - GNASH BRIDGES", "gold": 500, "xp": 600,
+     "first_win": [{"card_guid": "c69b5c92-9692-42c9-bfd9-e2d465fc7a26", "_name": "Piranha Swarm"}]},
+    {"scene": "AZ 1 - NODE 19A - HUMAN BLOCKADE", "gold": 0, "xp": 200},
+    {"scene": "AZ 1 - NODE 19B1 - ZOMBIE BLOCKADE", "gold": 250, "xp": 250},
+    {"scene": "AZ 1 - NODE 21 - MT GRAVE", "gold": 300, "xp": 200,
+     "first_win": [{"items": ["05c04799-a4d6-4adf-a188-ca549cde83b9"], "_name": "Conflagration Staff"}]},
+    {"scene": "AZ 1 - NODE 22 - ZEN DEN", "gold": 400, "xp": 250,
+     "first_win": [{"pack": "howling_plains"},
+                   {"items": ["aab7790b-9e55-4796-8f81-4dc7ef7b044e"], "_name": "Uzume, Grand Concubunny Sleeve"}]},
+    {"scene": "AZ 1 - NODE 23A - HUMANS CHOICE HELP", "gold": 250, "xp": 250,
+     "first_win": [{"pack": "howling_plains"}]},
+    {"scene": "AZ 1 - NODE 23A_2 - HUMANS NO HELP", "gold": 250, "xp": 250,
+     "first_win": [{"pack": "howling_plains"}]},
+    {"scene": "AZ 1 - NODE 23B - NECROTIC CHOICE HELP", "gold": 250, "xp": 250,
+     "first_win": [{"pack": "howling_plains"}]},
+    {"scene": "AZ 1 - NODE 23B_2 - NECROTIC NO HELP", "gold": 250, "xp": 250,
+     "first_win": [{"pack": "howling_plains"}]},
+    {"scene": "AZ 1 - NODE 26 - WAYWARD ORCS", "gold": 450, "xp": 250},
+    {"scene": "AZ 1 - NODE 26B - WAYWARD VENNEN", "gold": 450, "xp": 250},
+    {"scene": "AZ 1 - NODE 28 - FRIENDLY PLANTS", "gold": 500, "xp": 500,
+     "first_win": [{"pack": "howling_plains"}]},
+    {"scene": "AZ 1 - NODE 31 - WATER ELEMENTAL", "gold": 400, "xp": 200},
+    {"scene": "AZ 1 - NODE 32 - FOUL FAE", "gold": 0, "xp": 200,
+     "first_win": [{"pack": "howling_plains"}]},
+    {"scene": "AZ 1 - NODE 39 - DIAMONDS FUREVER", "gold": 0, "xp": 150},
+    {"scene": "AZ 1 - NODE 41 - SUNSOUL PHOENIX", "gold": 500, "xp": 250,
+     "first_win": [{"items": ["ab4a63a8-c378-4693-8b5a-97e423d3d47b",
+                              "3f2af3a4-8780-4095-ae81-d32b618f0595"],
+                    "_name": "Common + Uncommon Stardust"}]},
+    {"scene": "AZ 1 - NODE 45A - WOUNDED PETAL SHIN", "gold": 400, "xp": 200},
+    {"scene": "AZ 1 - NODE 45B - ELVES", "gold": 400, "xp": 200},
+    {"scene": "AZ 1 - NODE 47 - COYOTLE 1", "gold": 0, "xp": 200,
+     "first_win": [{"random_equipment": 2, "from_pack": "howling_plains"}]},
+    {"scene": "AZ 1 - NODE 50 - COYOTLE 2", "gold": 500, "xp": 200},
+    {"scene": "AZ 1 - NODE 52 - OLD DIRTY BUSTARD", "gold": 0, "xp": 150},
+    {"scene": "AZ 1 - NODE 55 - HARD WURMS", "gold": 0, "xp": 180,
+     "first_win": [{"card_guid": "5a9e60b4-713a-430c-bdc6-c714764ceabb", "_name": "Wormoid Hydra"}]},
+    {"scene": "AZ 1 - NODE 64 - DUSTY ROBOTS", "gold": 350, "xp": 250},
+    {"scene": "AZ 1 - NODE 65 - COYOTLE 3", "gold": 0, "xp": 200,
+     "first_win": [{"items": ["a2a6129b-978a-40ce-9673-73588e6a40c3"], "_name": "Rare Stardust"}]},
+    {"scene": "AZ 1 - NODE 66 - ARMY OF MYTH", "gold": 150, "xp": 200},
+    {"scene": "AZ 1 - NODE 67 - ZOMBIES IGNITED", "gold": 0, "xp": 250,
+     "first_win": [{"pack": "howling_plains"}]},
+    {"scene": "AZ 1 - NODE 71 - PATH OF THE KILLIPEDE 1", "gold": 250, "xp": 250,
+     "first_win": [{"random_equipment": 3, "from_pack": "howling_plains"}]},
+    {"scene": "AZ 1 - NODE 75 A - DWARVEN DIGGERS", "gold": 450, "xp": 250},
+    {"scene": "AZ 1 - NODE 75 B - COYOTLE DIGGERS", "gold": 450, "xp": 250},
+    {"scene": "AZ 1 - NODE 78 - KILLIPEDES REVENGE", "gold": 600, "xp": 350,
+     "first_win": [{"pack": "howling_plains"}, {"pack": "howling_plains"}]},
+    {"name_suffix": " Tutorial Castle Gatehouse", "gold": 50, "xp": 100},
+    {"name_suffix": " Tutorial Tower Gatehouse", "gold": 50, "xp": 100},
+    {"name_suffix": " Tutorial Tower of Penworth", "gold": 0, "xp": 0}
+  ],
+  "shroom_sets": {
+    "Artifact": [
+      {"name": "Builder Bot", "guid": "85112245-7aed-4a5b-9de9-3c262f11168a"},
+      {"name": "Deployment Orders", "guid": "fa7414ab-01d2-484f-8bab-68a03d9cce96"},
+      {"name": "Tricerobot", "guid": "5793dc95-b2e3-40d7-8010-5507d07f5328"}
+    ],
+    "Blood": [
+      {"name": "Elegy of Death", "guid": "0a6c7b17-81bf-476b-b4a1-a47169733b86"},
+      {"name": "Raving Ghoul", "guid": "a28873fd-8443-4c6f-a770-a00d3f7e7a86"},
+      {"name": "Rotting Away", "guid": "eaafb589-7eb5-4370-a945-ac9a0ee17404"}
+    ],
+    "Diamond": [
+      {"name": "Form Ranks", "guid": "56417801-718c-4cae-9bd2-90716aecdb45"},
+      {"name": "Ethereal Healer", "guid": "7203ae1e-f948-4a1b-ae50-a613a2d7bd4f"},
+      {"name": "Dandelion Faerie", "guid": "911c48dc-16ea-4b20-abdc-af558c1e7e81"}
+    ],
+    "Sapphire": [
+      {"name": "Morphology", "guid": "35c69927-8571-46c6-8b1f-5ed03a8f3104"},
+      {"name": "Chaotic Murmurs", "guid": "747a2454-0a93-4b20-b382-b671b9389623"},
+      {"name": "Heroic Echo", "guid": "c7df3f70-536c-49e8-9093-c129a2dafedf"}
+    ],
+    "Ruby": [
+      {"name": "Skittering Skarn", "guid": "33d9132f-9620-4045-afd4-9381b1478314"},
+      {"name": "Fuel for the Fire", "guid": "31532dc2-c509-4b02-8491-3de20fd0577c"},
+      {"name": "Emberbrute", "guid": "70f04584-0710-4b88-8f56-8f650015775c"}
+    ],
+    "Wild": [
+      {"name": "Feralroot Jaguar", "guid": "bc47eb79-bbdf-4252-b09b-ee7c90c5159b"},
+      {"name": "Walking Hive", "guid": "bf754a7c-1cf9-44d9-b1cc-135c6d90bc3b"},
+      {"name": "Thornsprout", "guid": "a5f50516-06c4-46fe-b8bc-edd3fc9a8a8f"}
+    ]
+  },
+  "shroom_hauses": {
+    "AZ 1 - NODE 04 - SHROOM HAUS 1 - REWARD": "Artifact",
+    "AZ 1 - NODE 42 - SHROOM HAUS 2 - REWARD": "Sapphire",
+    "AZ 1 - NODE 25 - SHROOM HAUS 3 - REWARD": "Diamond",
+    "AZ 1 - NODE 77 - SHROOM HAUS 4 - REWARD": "Blood",
+    "AZ 1 - NODE 29 - SHROOM HAUS 5 - REWARD": "Wild",
+    "AZ 1 - NODE 35 - SHROOM HAUS 6 - REWARD": "Ruby"
+  },
+  "event_costs": {
+    "gaal_camp_accept": {"gold": 100}
+  }
+}

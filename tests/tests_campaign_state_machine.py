@@ -28,6 +28,7 @@ CORRUPT_DRYAD = "879317e1-8b04-486e-a10a-f2d2f1a080bc"
 GNASH_BRIDGES = "3cf073b0-47fd-4911-953a-d86902890459"
 HOWLING_PLAINS_PACK = "7b8390fd-7d3d-44d4-b285-1aeae3aef98b"
 RAVENOUS_PIRANHA = "9ed0730b-e469-4c3d-ac7f-7b56c64b42ae"
+PIRANHA_SWARM = "c69b5c92-9692-42c9-bfd9-e2d465fc7a26"
 
 
 def cloned_db():
@@ -913,7 +914,13 @@ def test_savage_lord_advances_cross_zila_and_node_rewards_are_authored():
         gnash_rewards = json.loads(db.execute(
             "SELECT rewards_json FROM encounter_scenes WHERE guid=?",
             (GNASH_BRIDGES,)).fetchone()[0])
+        # Issue #38: the reward is the Piranha Swarm card (the Swarm of
+        # Piranhas deck plays Ravenous Piranha troops, which are no reward).
         assert any(
+            item.get("card_guid") == PIRANHA_SWARM and item["one_time"]
+            for item in gnash_rewards["end_of_game_rewards"]
+        )
+        assert not any(
             item.get("card_guid") == RAVENOUS_PIRANHA
             for item in gnash_rewards["end_of_game_rewards"]
         )
@@ -2609,10 +2616,14 @@ def test_leaving_a_dungeon_returns_to_its_entrance():
 SPLIT_NODE_SCENES = {
     "Ardent": {"choice_Help": "NODE 23B - NECROTIC CHOICE HELP",
                "choice_NoHelp": "NODE 23B_2 - NECROTIC NO HELP",
-               "Node026": "NODE 26B - WAYWARD VENNEN"},
+               "Node026": "NODE 26B - WAYWARD VENNEN",
+               "Node045": "NODE 45A - WOUNDED PETAL SHIN",
+               "Node075": "NODE 75 A - DWARVEN DIGGERS"},
     "Underworld": {"choice_Help": "NODE 23A - HUMANS CHOICE HELP",
                    "choice_NoHelp": "NODE 23A_2 - HUMANS NO HELP",
-                   "Node026": "NODE 26 - WAYWARD ORCS"},
+                   "Node026": "NODE 26 - WAYWARD ORCS",
+                   "Node045": "NODE 45B - ELVES",
+                   "Node075": "NODE 75 B - COYOTLE DIGGERS"},
 }
 SPLIT_NODE_SUCCESS = {
     ("Ardent", "choice_Help"): "ARDENT Success - Player chose to help necrotic",
@@ -2675,8 +2686,8 @@ def _play_split_node(db, driver, camp_id, node, faction, choice=None):
     if choice:
         assert success.endswith(SPLIT_NODE_SUCCESS[(faction, choice)]), success
     else:
-        assert success.lower().endswith(f"{faction.lower()} player success"), \
-            success
+        assert faction.lower() in success.lower() and \
+            success.lower().endswith("success"), success
     driver.event(camp_id, "conv_done")
     state = check._load_state(db, camp_id)
     data = _split_node_location(state, node)
@@ -2784,6 +2795,422 @@ def test_stale_faction_variant_locations_move_to_their_map_node():
         check._save_state(db, area_id, json.loads(stale_json))
         _cid, rebuilt = campaign._activate_az1_area(db, 6)
         check_migrated(rebuilt)
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+# Issue #38 part B: Brink Ridge's blockade, the AZ1 battle rewards, the
+# Burk Heart / Eagle Mesa faction battles, the Shroom Haus sets and the Gaal
+# fee.
+BRINK_NORTH = ("Node021", "Node023", "Node077")
+HUMAN_BLOCKADE = "bc3361b6-955a-4a48-bffa-b28b0513a489"
+ZOMBIE_BLOCKADE = "751ca760-fcf7-42ca-8d6f-e3d169abb8f0"
+SMOLDERING_DEAD_PORTAL = "1d91ee6d-dd5b-4aaf-af58-7ace873b1a80"
+
+
+class _QuietHandler:
+    @staticmethod
+    def _log_req(_message):
+        pass
+
+
+def _user_gold(db, user_id=1):
+    return db.execute("SELECT gold FROM users WHERE id=?",
+                      (user_id,)).fetchone()[0]
+
+
+def _set_user_gold(db, gold, user_id=1):
+    db.execute("INSERT OR IGNORE INTO users (id, name) VALUES (?, ?)",
+               (user_id, "test"))
+    db.execute("UPDATE users SET gold=? WHERE id=?", (gold, user_id))
+    db.commit()
+
+
+def _stand_next_to(db, champion_id, here, there, **pdata_updates):
+    """Put the champion on the completed node *here*, *there* reachable."""
+    import campaign_map_check as check
+    area_id, state = area_state(db, champion_id)
+    pdata = state["PublicState"]["Data"]
+    pdata.update(pdata_updates)
+    pdata.setdefault("visited_nodes", []).append(here)
+    pdata["blocked_nodes"] = [node for node in pdata.get("blocked_nodes") or []
+                              if node not in (here, there)]
+    for loc in state["VisLocs"]:
+        if loc["Data"]["node"] in (here, there):
+            loc["Data"].update({"visible": True, "enabled": True})
+        if loc["Data"]["node"] == here:
+            loc["Data"]["completed"] = True
+    state.update({"LastNode": here, "ALoc": None})
+    check._save_state(db, area_id, state)
+    return area_id
+
+
+def _enter_brink_ridge(db, driver, area_id):
+    import campaign_map_check as check
+    state = check._load_state(db, area_id)
+    name = _split_node_location(state, "Node019")["name"]
+    driver.visit_node(area_id, "Node019")
+    driver.startloc(area_id, name)
+    state = check._load_state(db, area_id)
+    data = _split_node_location(state, "Node019")
+    assert state["ALoc"] == name, state["ALoc"]
+    assert data["type"] == "Convo" and data["encounter"] is None, data
+    assert _conversation_names()[data["conversationId"]].endswith(
+        "Blockade - Step 2"), data
+    return state
+
+
+def _north_open(state):
+    blocked = set(state["PublicState"]["Data"].get("blocked_nodes") or [])
+    return {node: bool(_split_node_location(state, node)["visible"] and
+                       node not in blocked)
+            for node in BRINK_NORTH}
+
+
+def test_brink_ridge_blockade_fight_sneak_and_bribe_open_the_north():
+    """Issue #38: every answer of the guard that passes the blockade opens
+    Node021/023/077; the bribe costs 1,000 gold, the fight is battle 19A."""
+    import campaign_map_check as check
+    db, path = cloned_db()
+    try:
+        names = _conversation_names()
+        area_id = _stand_next_to(db, 6, "Node016", "Node019",
+                                 blockade_cleared=False)
+        start = json.dumps(check._load_state(db, area_id))
+        driver = check.Driver(db)
+        for answer in ("choice_sneak", "choice_Bribe", "choice_fight"):
+            check._save_state(db, area_id, json.loads(start))
+            _set_user_gold(db, 1500)
+            state = _enter_brink_ridge(db, driver, area_id)
+            assert not any(_north_open(state).values()), answer
+            response, _pushes, error = driver.event(area_id, answer)
+            assert error is None, error
+            if answer == "choice_fight":
+                driver.event(area_id, "conv_done")
+                state = check._load_state(db, area_id)
+                data = _split_node_location(state, "Node019")
+                assert data["type"] == "Encounter", data
+                assert data["encounter"] == HUMAN_BLOCKADE, data
+                assert data["encounter"] in {
+                    item["Name"] for item in state["Encounters"]}
+                assert not any(_north_open(state).values())
+                _r, pushes, _e = driver.event(area_id, "start")
+                assert any(push.get("RequestType") == "gamestarted"
+                           for push in pushes), pushes
+                campaign._apply_gameend(db, area_id, True)
+                state = check._load_state(db, area_id)
+                data = _split_node_location(state, "Node019")
+                assert data["outcome_conversation"], data
+                assert names[data["conversationId"]].endswith(
+                    "(if fight) Success"), names[data["conversationId"]]
+            else:
+                assert response["Applied"]["Accounts"] == (
+                    [{"Account": {"Gold": 500, "Platinum": response[
+                        "Applied"]["Accounts"][0]["Account"]["Platinum"]}}]
+                    if answer == "choice_Bribe" else []), response["Applied"]
+            driver.event(area_id, "conv_done")
+            state = check._load_state(db, area_id)
+            data = _split_node_location(state, "Node019")
+            assert state["PublicState"]["Data"]["blockade_cleared"], answer
+            assert data["completed"], (answer, data)
+            assert all(_north_open(state).values()), (answer, _north_open(
+                state))
+            assert _user_gold(db) == (500 if answer == "choice_Bribe"
+                                      else 1500), answer
+            driver.state_request(area_id)
+            state = check._load_state(db, area_id)
+            assert all(_north_open(state).values()), answer
+            data = _split_node_location(state, "Node019")
+            assert data["completed"] and data["type"] == "Convo", data
+            assert not check.state_problems(db, state, "AZ1").get("Node019")
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def test_brink_ridge_bribe_needs_the_gold_and_a_lost_fight_asks_again():
+    import campaign_map_check as check
+    db, path = cloned_db()
+    try:
+        area_id = _stand_next_to(db, 6, "Node016", "Node019",
+                                 blockade_cleared=False)
+        driver = check.Driver(db)
+        _set_user_gold(db, 900)
+        _enter_brink_ridge(db, driver, area_id)
+        driver.event(area_id, "choice_Bribe")
+        driver.event(area_id, "conv_done")
+        state = check._load_state(db, area_id)
+        pdata = state["PublicState"]["Data"]
+        assert _user_gold(db) == 900
+        assert not pdata.get("blockade_cleared")
+        assert "Node019" not in (pdata.get("node_choices") or {})
+        assert not _split_node_location(state, "Node019")["completed"]
+        assert not any(_north_open(state).values())
+        # A lost fight: the guard asks again on the next visit.
+        _enter_brink_ridge(db, driver, area_id)
+        driver.event(area_id, "choice_fight")
+        driver.event(area_id, "conv_done")
+        driver.event(area_id, "start")
+        campaign._apply_gameend(db, area_id, False)
+        state = check._load_state(db, area_id)
+        data = _split_node_location(state, "Node019")
+        assert data["outcome_conversation"], data
+        assert _conversation_names()[data["conversationId"]].endswith(
+            "(if fight) Fail"), data
+        driver.event(area_id, "conv_done")
+        driver.state_request(area_id)
+        state = check._load_state(db, area_id)
+        assert not any(_north_open(state).values())
+        assert "Node019" not in (state["PublicState"]["Data"].get(
+            "node_choices") or {})
+        assert not check.state_problems(db, state, "AZ1").get("Node019")
+        state = _enter_brink_ridge(db, driver, area_id)
+        assert not _split_node_location(state, "Node019")["completed"]
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def test_brink_ridge_zombies_follow_the_smoldering_dead_once():
+    """Issue #38: no Smoldering Dead portal on Brink Ridge; the Barricade
+    Zombie (19B1, 250/250) is fought there once after the dungeon."""
+    import campaign_map_check as check
+    db, path = cloned_db()
+    try:
+        area_id = _stand_next_to(db, 6, "Node019", "Node016",
+                                 blockade_cleared=True)
+        state = check._load_state(db, area_id)
+        assert campaign._quest_hook_az1_smoldering_dead_start(
+            db, 6, state) is False
+        driver = check.Driver(db)
+        driver.state_request(area_id)
+        state = check._load_state(db, area_id)
+        data = _split_node_location(state, "Node019")
+        assert data["type"] == "Convo" and data["completed"], data
+        assert data["encounter"] in (None, ""), data
+        assert SMOLDERING_DEAD_PORTAL not in json.dumps(data)
+        # The Smoldering Dead is finished.
+        camp_id = campaign._new_camp_id(db)
+        db.execute(
+            "INSERT INTO campaigns (id,camp_uid_lo,camp_uid_hi,champion_id,"
+            "user_id,champion_name,template_name,campaign_type,is_started,"
+            "state_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (camp_id, campaign._generate_inst_id(), 0, 6, 1, "test",
+             "The Smoldering Dead", "DUNGEON", 1, json.dumps({
+                 "DungeonRun": {"name": "The Smoldering Dead"},
+                 "Finished": "2026-10-29T00:00:00",
+                 "FinishReason": "Complete"})))
+        db.commit()
+        driver.state_request(area_id)
+        state = check._load_state(db, area_id)
+        data = _split_node_location(state, "Node019")
+        assert data["type"] == "Encounter", data
+        assert data["encounter"] == ZOMBIE_BLOCKADE, data
+        assert not data["completed"], data
+        assert ZOMBIE_BLOCKADE in {item["Name"] for item in state["Encounters"]}
+        assert not check.state_problems(db, state, "AZ1").get("Node019")
+        driver.startloc(area_id, data["name"])
+        _r, pushes, _e = driver.event(area_id, "start")
+        assert any(push.get("RequestType") == "gamestarted"
+                   for push in pushes), pushes
+        reward = campaign._apply_encounter_end_rewards(
+            _QuietHandler(), db,
+            SimpleNamespace(session_name="zombies", session_id=4242),
+            area_id, True)
+        assert (reward["gold"], reward["xp"]) == (250, 250), reward
+        campaign._apply_gameend(db, area_id, True)
+        state = check._load_state(db, area_id)
+        data = _split_node_location(state, "Node019")
+        assert not data.get("outcome_conversation"), data
+        assert data["completed"], data
+        driver.state_request(area_id)
+        state = check._load_state(db, area_id)
+        data = _split_node_location(state, "Node019")
+        assert data["type"] == "Convo" and data["completed"], data
+        assert state["PublicState"]["Data"]["gate_after_won"] == {
+            "Node019": True}
+        assert all(_north_open(state).values())
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def _scene_guid(db, name):
+    return db.execute("SELECT guid FROM encounter_scenes WHERE name=?",
+                      (name,)).fetchone()[0]
+
+
+def test_az1_battle_rewards_follow_the_observed_table():
+    """Issue #38: gold and XP on every win, items only on the first."""
+    import az1_rewards
+    db, path = cloned_db()
+    try:
+        def records(name):
+            return campaign._scene_reward_records(db, _scene_guid(db, name))
+
+        currency = lambda gold, xp: {"gold": gold, "xp": xp,
+                                     "one_time": False}
+        cub = records("AZ 1 - NODE 03 - WILD CUB")
+        assert cub[0] == currency(150, 100), cub
+        assert cub[1]["end_of_game_condition"]["type"] == "void_tamed_troop"
+        assert records("AZ 1 - NODE 05 - MANIC MANTIS") == [
+            currency(0, 200),
+            {"chest_guid": HOWLING_PLAINS_PACK, "one_time": True}]
+        assert records("AZ 1 - NODE 13 - GNASH BRIDGES") == [
+            currency(500, 600),
+            {"card_guid": PIRANHA_SWARM, "one_time": True}]
+        guru = records("AZ 1 - NODE 22 - ZEN DEN")
+        assert guru[0] == currency(400, 250)
+        assert {"items": ["aab7790b-9e55-4796-8f81-4dc7ef7b044e"],
+                "one_time": True} in guru, guru
+        assert records("AZ 1 - NODE 78 - KILLIPEDES REVENGE") == [
+            currency(600, 350)] + [
+            {"chest_guid": HOWLING_PLAINS_PACK, "one_time": True}] * 2
+        assert records("AZ 1 - NODE 75 B - COYOTLE DIGGERS") == [
+            currency(450, 250)]
+        for race in ("Coyotle", "Dwarf", "Elf", "Human", "Necrotic", "Orc",
+                     "Shin'hare", "Vennen"):
+            for room in ("Castle Gatehouse", "Tower Gatehouse"):
+                assert records(f"{race} Tutorial {room}") == [
+                    currency(50, 100)], (race, room)
+            assert records(f"{race} Tutorial Tower of Penworth") == [], race
+        # The refresh is idempotent: applying the table again changes nothing.
+        for name, raw in db.execute(
+                "SELECT name, rewards_json FROM encounter_scenes").fetchall():
+            stored = json.loads(raw or "{}")
+            assert az1_rewards.apply_scene_rewards(name, stored) == stored, \
+                name
+
+        # Paying out: the first win grants the items, a repeat only currency.
+        area_id, state = area_state(db)
+        user_id = 1
+        before = dict(db.execute(
+            "SELECT rarity, quantity FROM stardust WHERE user_id=?",
+            (user_id,)).fetchall())
+        payouts = {}
+        for name in ("AZ 1 - NODE 05 - MANIC MANTIS",
+                     "AZ 1 - NODE 41 - SUNSOUL PHOENIX",
+                     "AZ 1 - NODE 47 - COYOTLE 1"):
+            for session_id in (1, 2):
+                state = campaign.pve_db.db_campaign_state(area_id, conn=db)
+                state = json.loads(state)
+                state["ActiveEncounterGuid"] = _scene_guid(db, name)
+                db.execute("UPDATE campaigns SET state_json=? WHERE id=?",
+                           (json.dumps(state), area_id))
+                db.commit()
+                payouts[(name, session_id)] = \
+                    campaign._apply_encounter_end_rewards(
+                        _QuietHandler(), db, SimpleNamespace(
+                            session_name="t", session_id=session_id),
+                        area_id, True)
+        mantis = [payouts[("AZ 1 - NODE 05 - MANIC MANTIS", i)]
+                  for i in (1, 2)]
+        assert [(p["gold"], p["xp"], len(p["chests"])) for p in mantis] == [
+            (0, 200, 1), (0, 200, 0)], mantis
+        phoenix = [payouts[("AZ 1 - NODE 41 - SUNSOUL PHOENIX", i)]
+                   for i in (1, 2)]
+        assert [(p["gold"], p["xp"]) for p in phoenix] == [(500, 250)] * 2
+        assert {item["template"] for item in phoenix[0]["items"]} == {
+            "ab4a63a8-c378-4693-8b5a-97e423d3d47b",
+            "3f2af3a4-8780-4095-ae81-d32b618f0595"}, phoenix[0]
+        assert not phoenix[1]["items"], phoenix[1]
+        after = dict(db.execute(
+            "SELECT rarity, quantity FROM stardust WHERE user_id=?",
+            (user_id,)).fetchall())
+        for rarity in ("common", "uncommon"):
+            assert after[rarity] == before.get(rarity, 0) + 1, rarity
+        sky = [payouts[("AZ 1 - NODE 47 - COYOTLE 1", i)] for i in (1, 2)]
+        from az1_pack import pack_loot_table
+        pool = {entry.guid for entry in
+                pack_loot_table(HOWLING_PLAINS_PACK).equipment}
+        assert sum(item["granted"] for item in sky[0]["items"]) == 2, sky
+        assert {item["template"] for item in sky[0]["items"]} <= pool
+        assert (sky[1]["xp"], sky[1]["items"]) == (200, []), sky[1]
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def test_burk_heart_and_eagle_mesa_play_their_faction_battles():
+    """Issue #38: Node045 (45A/45B) and Node075 (75 A/B) fight after their
+    dialogue; a save that hydrated them as a plain dialogue is repaired."""
+    import campaign_map_check as check
+    db, path = cloned_db()
+    try:
+        driver = check.Driver(db)
+        for champion_id, faction in ((6, "Ardent"), (4, "Underworld")):
+            for here, node in (("Node044", "Node045"),
+                               ("Node074", "Node075")):
+                area_id = _stand_next_to(db, champion_id, here, node)
+                state = check._load_state(db, area_id)
+                data = _split_node_location(state, node)
+                # Older saves: an unplayed plain dialogue.
+                data.update({"type": "Convo", "encounter": None,
+                             "pre_encounter": None, "completed": False})
+                check._save_state(db, area_id, state)
+                driver.state_request(area_id)
+                state = _play_split_node(db, driver, area_id, node, faction)
+                assert _split_node_location(state, node)["type"] != "Convo" \
+                    or _split_node_location(state, node)["completed"]
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def test_shroom_hauses_offer_their_own_card_sets():
+    """Issue #38 (P:201-207): each Shroom Haus offers its Haus's cards."""
+    import az1_rewards
+    db, path = cloned_db()
+    try:
+        table = az1_rewards.load_table()
+        expected = {"Node004": "Artifact", "Node042": "Sapphire",
+                    "Node025": "Diamond", "Node077": "Blood",
+                    "Node029": "Wild", "Node035": "Ruby"}
+        _area_id, state = area_state(db)
+        campaign._hydrate_az1_area_scene_metadata(
+            db, state["VisLocs"], champ_id=6, state=state)
+        for node, kind in expected.items():
+            guids = [card["guid"] for card in table["shroom_sets"][kind]]
+            scene = campaign._az1_scene_for_node(db, node)
+            assert campaign._scene_card_choices(db, scene[0]) == guids, node
+            assert _split_node_location(state, node)["choices"] == guids, node
+            for guid in guids:
+                assert campaign.pve_db.db_encounter_scene_runtime(
+                    scene[0], db) is not None
+                assert db.execute(
+                    "SELECT 1 FROM card_templates WHERE guid=? AND "
+                    "equipment_modified=0", (guid,)).fetchone(), guid
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def test_gaal_reading_costs_one_hundred_gold():
+    import campaign_map_check as check
+    db, path = cloned_db()
+    try:
+        area_id, state = area_state(db)
+        driver = check.Driver(db)
+        _set_user_gold(db, 150)
+        response, _pushes, error = driver.event(area_id, "gaal_camp_accept")
+        assert error is None, error
+        assert _user_gold(db) == 50
+        assert response["Applied"]["Accounts"][0]["Account"]["Gold"] == 50
+        pdata = check._load_state(db, area_id)["PublicState"]["Data"]
+        assert pdata["gaal_fortune"] and pdata.get("gaal_fortune_guid")
+        # Without 100 gold there is no reading.
+        state = check._load_state(db, area_id)
+        for key in ("gaal_fortune", "gaal_fortune_guid",
+                    "gaal_fortune_display_pending"):
+            state["PublicState"]["Data"].pop(key, None)
+        check._save_state(db, area_id, state)
+        response, _pushes, _error = driver.event(area_id, "gaal_camp_accept")
+        assert _user_gold(db) == 50
+        assert not response["Applied"]["Accounts"]
+        pdata = check._load_state(db, area_id)["PublicState"]["Data"]
+        assert not pdata.get("gaal_fortune")
+        assert not pdata.get("gaal_fortune_guid")
     finally:
         db.close()
         os.unlink(path)
@@ -3302,6 +3729,13 @@ if __name__ == "__main__":
         test_takumi_tamed_quest_is_the_not_complete_conversation,
         test_blood_gate_opens_with_blood_beneath,
         test_three_braves_starts_at_the_robot_and_follows_its_steps,
+        test_brink_ridge_blockade_fight_sneak_and_bribe_open_the_north,
+        test_brink_ridge_bribe_needs_the_gold_and_a_lost_fight_asks_again,
+        test_brink_ridge_zombies_follow_the_smoldering_dead_once,
+        test_az1_battle_rewards_follow_the_observed_table,
+        test_burk_heart_and_eagle_mesa_play_their_faction_battles,
+        test_shroom_hauses_offer_their_own_card_sets,
+        test_gaal_reading_costs_one_hundred_gold,
         test_every_az1_node_keeps_the_client_contract,
         test_every_dungeon_map_keeps_the_client_contract,
     ]

@@ -43,6 +43,8 @@ from profile_db import (db_add_collection, db_add_inventory,
                         db_update_champion_xp, db_create_treasure_chest)
 from services import server_perks
 from static import DUNGEON_PREFAB_PATHS, tame_objective_scene
+from profile_db import db_add_stardust, db_spend_user_gold
+import az1_rewards
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -2043,6 +2045,11 @@ def _az1_node_conversation(db, node, state=None, campaign_template="AZ1",
     rows = _az1_node_conversation_rows(db, node, campaign_template)
     if not rows:
         return None
+    gate_conversation = (_az1_gate_conversation(db, node, state)
+                         if str(campaign_template or "").upper() == "AZ1"
+                         else None)
+    if gate_conversation:
+        return gate_conversation
     if (str(campaign_template or "").upper() == "AZ1" and
             str(node or "").lower() in {"noder", "node00r"}):
         variant = _az1_masked_army_variant(db, champ_id, node=node)
@@ -2211,6 +2218,12 @@ def _az1_outcome_conversation(db, node, won, champ_id=None, state=None):
         if faction_rows:
             rows = faction_rows
     rule = _az1_node_variant_rules().get(str(node or ""))
+    if (state is not None and _az1_gate_after_scene(db, node) ==
+            str(state.get("ActiveEncounterGuid") or "") != ""):
+        # A gate's one-time battle after its dungeon (Brink Ridge's zombie
+        # blockade) has no result dialogue of its own; the blockade's
+        # Success/Fail lines belong to the guard's fight.
+        return None
     if rule and won:
         _event, choice = _az1_node_choice(rule, state, node)
         wanted = str(choice.get("success_label") or "").lower()
@@ -2219,6 +2232,174 @@ def _az1_outcome_conversation(db, node, won, champ_id=None, state=None):
         if chosen:
             rows = chosen
     return rows[0][0]
+
+
+def _az1_gate(node):
+    """``(rule, gate)`` of a gate node in az1_node_variants.json, else None."""
+    rule = _az1_node_variant_rules().get(str(node or "")) or {}
+    gate = rule.get("gate")
+    return (rule, gate) if isinstance(gate, dict) else (rule, None)
+
+
+def _az1_gate_cleared(state, node):
+    """Whether the gate on *node* has been passed (its flag is set)."""
+    _rule, gate = _az1_gate(node)
+    if gate is None:
+        return True
+    pdata = ((state or {}).get("PublicState") or {}).get("Data") or {}
+    return bool(pdata.get(str(gate.get("flag") or "")))
+
+
+def _az1_gate_conversation(db, node, state):
+    """The gate's dialogue while it is closed (Brink Ridge's guard), else None."""
+    _rule, gate = _az1_gate(node)
+    if gate is None or _az1_gate_cleared(state, node):
+        return None
+    wanted = str(gate.get("conversation") or "").lower()
+    for guid, trigger, _priority, name in _az1_node_conversation_rows(db, node):
+        if wanted and str(trigger.get("label") or name or "").lower() == wanted:
+            return guid
+    return None
+
+
+def _az1_gate_after_scene(db, node):
+    """Scene GUID of the gate's one-time battle after its dungeon, or None."""
+    _rule, gate = _az1_gate(node)
+    after = (gate or {}).get("after_dungeon") or {}
+    scene = _az1_scene_for_node(db, after.get("scene")) if after else None
+    return str(scene[0]) if scene else None
+
+
+def _az1_gate_after_battle(db, champ_id, state, node):
+    """The after-dungeon battle scene while it is still to be fought."""
+    _rule, gate = _az1_gate(node)
+    after = (gate or {}).get("after_dungeon") or {}
+    if not after or champ_id is None:
+        return None
+    pdata = ((state or {}).get("PublicState") or {}).get("Data") or {}
+    if (pdata.get("gate_after_won") or {}).get(str(node)):
+        return None
+    if not _dungeon_completed_for_champion(db, champ_id, after.get("dungeon")):
+        return None
+    return _az1_gate_after_scene(db, node)
+
+
+def _az1_gate_battle(db, state, node):
+    """Scene GUID of the battle the recorded gate answer leads to, or None."""
+    rule, gate = _az1_gate(node)
+    if gate is None:
+        return None
+    pdata = ((state or {}).get("PublicState") or {}).get("Data") or {}
+    event = (pdata.get("node_choices") or {}).get(str(node))
+    choice = (rule.get("choices") or {}).get(event) or {}
+    scene = (_az1_scene_for_node(db, choice["battle"])
+             if choice.get("battle") else None)
+    return str(scene[0]) if scene else None
+
+
+def _az1_hydrate_gate(db, node, data, state, champ_id):
+    """Hydrate a gate node (Brink Ridge's blockade, issue #38).
+
+    Closed, the node plays the guard's dialogue; a fight answer turns the
+    dialogue into the prelude of its battle, and a lost battle lets the guard
+    ask again.  Passed, the node is an ordinary completed conversation,
+    except for the one-time battle after the gate's dungeon.  Returns True
+    when *data* is complete, False to continue the generic conversation
+    hydration.
+    """
+    _rule, gate = _az1_gate(node)
+    if gate is None or state is None:
+        return False
+    data.pop("gate_battle", None)
+    if data.get("outcome_conversation") and data.get("conversationId"):
+        # The fight's Success/Fail dialogue queued by the game end.
+        data.update({"type": "Convo", "encounter": None, "completed": False,
+                     "repeatable": False, "autostart": True,
+                     "enabled": True, "visible": True})
+        return True
+    if _az1_gate_cleared(state, node):
+        after = _az1_gate_after_battle(db, champ_id, state, node)
+        if after:
+            if data.get("type") != "Encounter":
+                data["autostart"] = False
+            data.update({"type": "Encounter", "encounter": after,
+                         "conversationId": None, "completed": False,
+                         "repeatable": False, "pre_encounter": False,
+                         "pre_encounter_completed": False,
+                         "gate_battle": "after_dungeon"})
+            return True
+        data.update({"pre_encounter": False, "pre_encounter_completed": False,
+                     "encounter": None})
+        return False
+    battle = _az1_gate_battle(db, state, node)
+    pdata = state.setdefault("PublicState", {}).setdefault("Data", {})
+    if battle and str(node) in _az1_failed_nodes(state):
+        # The fight was lost: the guard asks again on the next visit.
+        (pdata.get("node_choices") or {}).pop(str(node), None)
+        battle = None
+    if battle:
+        data.update({"encounter": battle, "completed": False,
+                     "repeatable": False, "pre_encounter": True,
+                     "gate_battle": "fight"})
+        if data.get("type") == "Encounter":
+            data.update({"conversationId": None,
+                         "pre_encounter_completed": True})
+        else:
+            data.update({"type": "Convo", "pre_encounter_completed": False})
+            if not data.get("conversationId"):
+                data["conversationId"] = _az1_gate_conversation(
+                    db, node, state)
+        return True
+    data.update({"pre_encounter": False, "pre_encounter_completed": False,
+                 "encounter": None})
+    if data.get("type") == "Encounter":
+        data["type"] = "Convo"
+    return False
+
+
+def _az1_apply_gate_choice(db, state, champ_id, node, event_name, applied):
+    """Apply a gate answer's cost and effect; False refuses the answer.
+
+    The bribe is paid atomically when the answer arrives (and refused when
+    the gold is missing); sneaking past or paying sets the gate's flag at
+    once, a fight answer clears an earlier loss so its battle follows.
+    """
+    rule, gate = _az1_gate(node)
+    choice = (rule.get("choices") or {}).get(event_name) or {}
+    if gate is None or not choice:
+        return True
+    pdata = state.setdefault("PublicState", {}).setdefault("Data", {})
+    try:
+        cost = max(0, int(choice.get("cost_gold") or 0))
+    except (TypeError, ValueError):
+        cost = 0
+    if cost:
+        user_id = pve_db.db_campaign_user_id(champ_id, conn=db)
+        balances = (db_spend_user_gold(user_id, cost, conn=db)
+                    if user_id is not None else None)
+        if balances is None:
+            return False
+        applied["Accounts"].append({"Account": {
+            "Gold": balances[0], "Platinum": balances[1]}})
+    if choice.get("clears"):
+        pdata[str(gate.get("flag") or "")] = True
+    if choice.get("battle"):
+        pdata["failed_nodes"] = [value for value in
+                                 (pdata.get("failed_nodes") or [])
+                                 if str(value) != str(node)]
+    return True
+
+
+def _az1_gate_battle_won(db, state, node, scene_guid):
+    """Record a won battle on a gate node: it passes the gate, and the
+    after-dungeon battle is fought only once."""
+    _rule, gate = _az1_gate(node)
+    if gate is None:
+        return
+    pdata = state.setdefault("PublicState", {}).setdefault("Data", {})
+    pdata[str(gate.get("flag") or "")] = True
+    if scene_guid and scene_guid == _az1_gate_after_scene(db, node):
+        pdata.setdefault("gate_after_won", {})[str(node)] = True
 
 
 def _az1_path_fork_ids(db):
@@ -2318,8 +2499,7 @@ def _hydrate_az1_area_scene_metadata(db, locations, champ_id=None, state=None):
         _az1_append_path_forks(
             db, locations, state.setdefault("LocNodes", []))
     gaal_nodes = _gaal_camp_nodes(db, "AZ1")
-    public_data = (((state or {}).get("PublicState") or {}).get("Data") or {})
-    blockade_cleared = bool(public_data.get("blockade_cleared"))
+    variant_rules = _az1_node_variant_rules()
     dungeon_entrances = {template["entrance_scene"]: template
                          for template in _dungeon_template_rows(db)
                          if template["entrance_scene"]}
@@ -2327,6 +2507,8 @@ def _hydrate_az1_area_scene_metadata(db, locations, champ_id=None, state=None):
         data = loc.get("Data") or {}
         node = data.get("node") or ""
         scene = _az1_location_scene(db, node, state, champ_id)
+        if not scene and _az1_hydrate_gate(db, node, data, state, champ_id):
+            continue
         if not scene:
             # Not every authored conversation has an accompanying encounter
             # scene.  Vale of Oberon, for example, is a conversation-only
@@ -2378,15 +2560,24 @@ def _hydrate_az1_area_scene_metadata(db, locations, champ_id=None, state=None):
                 if (data.get("quest_start_open") and
                         not data.get("completed")):
                     data["repeatable"] = True
-                # Closing Brink Ridge's ordinary blockade explanation does
-                # not clear the road.  Only the successful blockade encounter
-                # sets blockade_cleared, so repair older states that marked
-                # this conversation complete and keep the node actionable.
-                if (str(node) == "Node019" and not blockade_cleared):
+                # Closing Brink Ridge's blockade dialogue does not clear the
+                # road.  Only a passing answer or the won fight sets the
+                # gate's flag, so repair older states that marked this
+                # conversation complete and keep the node actionable.
+                if not _az1_gate_cleared(state, node):
                     data["completed"] = False
             continue
         guid, name, rewards_json = scene
         upper_name = str(name or "").upper()
+        if ((variant_rules.get(str(node)) or {}).get("by_faction") and
+                data.get("type") == "Convo" and not data.get("encounter") and
+                not any(data.get(key) for key in (
+                    "completed", "pre_encounter", "outcome_conversation",
+                    "quest_start_open", "turninquest"))):
+            # A faction battle added to a node that older saves hydrated as
+            # a plain conversation (Burk Heart, Eagle Mesa; issue #38): an
+            # unplayed node becomes its prelude and battle again.
+            data["type"] = "Empty"
         if guid in dungeon_entrances:
             # A DungeonTemplate entrance is a map portal, never a battle: its
             # scene has no players, and sending it as an Encounter crashed
@@ -3363,55 +3554,15 @@ def _quest_hook_az1_cross_zodiac_start(db, champ_id, state):
 
 
 def _quest_hook_az1_smoldering_dead_start(db, champ_id, state):
-    """Make Brink Ridge launch the active Smoldering Dead encounter.
+    """Smoldering Dead start: the map needs no rewrite.
 
-    The source quest records the first objective as a dungeon objective, while
-    the AZ1 map places the encounter behind the Brink Ridge conversation.  At
-    quest start, replace that conversation with the authored encounter scene;
-    the normal area game-end path then completes the location and advances the
-    journal objective.  Once the objective changes to the report conversation,
-    this hook leaves Brink Ridge alone so its normal map conversation is
-    restored by hydration.
+    The dungeon is entered at its own portal (Node024).  An earlier version
+    put that deck-less portal scene onto Brink Ridge (Node019) as a battle;
+    Brink Ridge is now its blockade gate, whose one-time zombie battle
+    follows the finished dungeon (az1_node_variants.json, issue #38).  The
+    hook stays registered for databases that name it.
     """
-    before = json.dumps(state, sort_keys=True)
-    _quest_id, quest_state = _quest_state_row(db, champ_id, "q_smoldering_dead")
-    if not quest_state or quest_state.get("Finished"):
-        return False
-    flags = quest_state.get("Flags") or {}
-    objectives = flags.get("_quest_objectives") or []
-    try:
-        index = int(flags.get("_quest_objective_idx", 0) or 0)
-    except (TypeError, ValueError):
-        index = 0
-    if not (0 <= index < len(objectives)):
-        return False
-    objective = objectives[index]
-    if str(objective.get("type") or "").lower() not in {"dungeon", "encounter"}:
-        return False
-    encounter = str(objective.get("encounter") or "")
-    if not encounter:
-        return False
-
-    for loc in state.get("VisLocs", []):
-        data = loc.get("Data") or {}
-        if data.get("node") != "Node019":
-            continue
-        data.update({
-            "type": "Encounter",
-            "encounter": encounter,
-            "conversationId": None,
-            "completed": False,
-            "repeatable": False,
-            "pre_encounter": False,
-            "pre_encounter_completed": False,
-            "outcome_conversation": False,
-            "autostart": True,
-            "enabled": True,
-            "visible": True,
-        })
-        break
-    _az1_reveal_neighbors(db, state, state.get("LastNode") or state.get("ALoc"))
-    return json.dumps(state, sort_keys=True) != before
+    return False
 
 
 def _quest_hook_az1_find_cave_in_start(db, champ_id, state):
@@ -6479,10 +6630,16 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
         # conversation follows from the same record (issue #34).
         node = _az1_choice_node(state, event_name)
         pdata = state.setdefault("PublicState", {}).setdefault("Data", {})
-        pdata.setdefault("node_choices", {})[node] = event_name
-        _hydrate_az1_area_scene_metadata(
-            db, state.get("VisLocs", []), champ_id=champ_id, state=state)
-        log(f"    Campaign AZ1 choice: node={node} event={event_name}")
+        # A gate answer (Brink Ridge) can cost gold or pass the gate.
+        if _az1_apply_gate_choice(db, state, champ_id, node, event_name,
+                                  conversation_applied):
+            pdata.setdefault("node_choices", {})[node] = event_name
+            _hydrate_az1_area_scene_metadata(
+                db, state.get("VisLocs", []), champ_id=champ_id, state=state)
+            log(f"    Campaign AZ1 choice: node={node} event={event_name}")
+        else:
+            log(f"    Campaign AZ1 choice refused: node={node} "
+                f"event={event_name} (not enough gold)")
     elif event_name == "visit_path":
         # The map client reports the authored path identifier separately from
         # StartLoc. Persist it so travelled paths remain lit after refresh.
@@ -6633,8 +6790,22 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
         # display is deferred until conv_done, after the conversation window
         # has closed, so the two client panels do not overlap.
         data = state.setdefault("PublicState", {}).setdefault("Data", {})
-        data["gaal_fortune"] = True
-        fortune_guids = _fortune_card_guids(db)
+        # The reading costs 100 gold ("Pay 100 gold", az1_rewards.json);
+        # without the gold there is no reading.
+        cost = az1_rewards.event_cost(event_name)
+        user_id = (pve_db.db_campaign_user_id(champ_id, conn=db)
+                   if cost else None)
+        balances = (db_spend_user_gold(user_id, cost, conn=db)
+                    if cost and user_id is not None else None)
+        if cost and balances is None:
+            log(f"    Gaal reading refused: {cost} gold missing")
+            fortune_guids = []
+        else:
+            if balances is not None:
+                conversation_applied["Accounts"].append({"Account": {
+                    "Gold": balances[0], "Platinum": balances[1]}})
+            data["gaal_fortune"] = True
+            fortune_guids = _fortune_card_guids(db)
         if fortune_guids:
             data["gaal_fortune_guid"] = random.choice(fortune_guids)
             data["gaal_fortune_display_pending"] = True
@@ -6812,9 +6983,9 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
                 outcome_won = bool(current_data.get("outcome_won", True))
                 pre_encounter_convo = bool(current_data.get("pre_encounter"))
                 quest_turnin_convo = bool(current_data.get("turninquest"))
-                blockade_convo = (
+                gate_convo = (
                     current_template == "AZ1" and
-                    current_data.get("node") == "Node019" and
+                    _az1_gate(current_data.get("node"))[1] is not None and
                     current_data.get("type") == "Convo" and
                     not outcome_convo and not pre_encounter_convo)
                 if outcome_convo:
@@ -6828,11 +6999,16 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
                     else:
                         current_data["completed"] = False
                     current_data["autostart"] = False
-                elif blockade_convo:
-                    # The first Brink Ridge conversation only explains the
-                    # blockade. It must not complete the node or reveal its
-                    # northern neighbours; the successful encounter sets
-                    # blockade_cleared through the battle result path.
+                elif gate_convo and _az1_gate_cleared(
+                        state, current_data.get("node")):
+                    # Sneaking past or paying the Brink Ridge guard passed
+                    # the gate during this dialogue: the road is open.
+                    _mark_location_completed(state, current)
+                    current_data["autostart"] = False
+                elif gate_convo:
+                    # A closed gate's dialogue must not complete the node or
+                    # reveal its northern neighbours; only a passing answer
+                    # or the won fight sets the gate's flag.
                     current_data["completed"] = False
                     current_data["autostart"] = False
                 elif quest_turnin_convo:
@@ -6984,6 +7160,10 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
                     })
                     if scene:
                         current_data["encounter"] = scene[0]
+                    elif _az1_gate_battle(db, state, current_data.get("node")):
+                        # A gate's fight (Brink Ridge) has no node scene.
+                        current_data["encounter"] = _az1_gate_battle(
+                            db, state, current_data.get("node"))
                     state["ALoc"] = None
                 elif not current_data.get("shroomhaus_ready"):
                     state["ALoc"] = None
@@ -7469,10 +7649,8 @@ def _apply_gameend(db, camp_id, won):
                 state["ALoc"] = (result_data.get("name") or
                                   result_data.get("node") or result_node)
                 outcome_pending = True
-            if (result_node == "Node019" and won and not retryable):
-                state.setdefault("PublicState", {}).setdefault("Data", {})[
-                    "blockade_cleared"
-                ] = True
+            if won and not retryable:
+                _az1_gate_battle_won(db, state, result_node, active_scene)
         state.pop("ActiveEncounterGuid", None)
 
     # Clear ALoc so the panorama doesn't auto-pop the encounter dialog when
@@ -8279,6 +8457,9 @@ def _apply_encounter_end_rewards(handler, db, session, camp_id, won):
             }]
         if isinstance(item_specs, dict):
             item_specs = [item_specs]
+        # ``random_equipment``: pieces drawn from a pack's equipment table.
+        item_specs = (list(item_specs) +
+                      az1_rewards.random_equipment_specs(reward_obj))
         if not condition or context:
             for spec in item_specs:
                 if isinstance(spec, str):
@@ -8311,6 +8492,10 @@ def _apply_encounter_end_rewards(handler, db, session, camp_id, won):
                     db_upsert_inventory_item(
                         player_user_id, str(template_guid), new_quantity,
                         client_item_uid=item_uid, conn=db)
+                # Stardust is also kept in its own ledger (as pack Stardust).
+                rarity = az1_rewards.stardust_rarity(template_guid)
+                if rarity:
+                    db_add_stardust(player_user_id, rarity, quantity, conn=db)
                 items.append({"id": item_uid, "template": str(template_guid),
                               "quantity": new_quantity, "granted": quantity})
         if not cards and not gold and not xp and not chest and not items:

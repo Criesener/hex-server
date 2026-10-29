@@ -2704,6 +2704,9 @@ def ensure_schema(db):
                         or "").lower() == "void_tamed_troop"
                        for record in rewards.get("end_of_game_rewards") or []):
                     rewards.pop("end_of_game_rewards", None)
+            # The observed AZ1 payouts (issue #38) live in az1_rewards.json.
+            from az1_rewards import apply_scene_rewards
+            rewards = apply_scene_rewards(ename, rewards)
             db.execute("UPDATE encounter_scenes SET rewards_json=? WHERE guid=?",
                        (json.dumps(rewards), eguid))
         db.commit()
