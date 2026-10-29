@@ -1316,6 +1316,29 @@ def resolve_dungeon_rooms(record: dict[str, Any], conversations: dict[str, str],
                           if stage["preludes"] or stage.get("encounter")
                           or stage.get("encounter_by_faction")]
 
+    # A later room that plays "<X>" and its continuation "<X> 2" back to back
+    # shares its node with an earlier, empty room (Tranquil Dream: "The
+    # Dream" hub and the "Sister Midnight" finale on NodeG).  "<X>" is the
+    # first-visit conversation of that node and must play before its paths
+    # open; the finale keeps only the continuation.
+    for position, room in enumerate(rooms):
+        hub = next((other for other in rooms[:position]
+                    if other["node"] and other["node"] == room["node"]
+                    and not other["stages"]), None)
+        if hub is None:
+            continue
+        for stage in room["stages"]:
+            bases = {by_guid[c]["base"]: c for c in stage["preludes"]
+                     if c in by_guid and not by_guid[c]["outcome"]}
+            opener = next((guid for base, guid in bases.items()
+                           if any(re.fullmatch(re.escape(base) + r" \d+", other)
+                                  for other in bases)), None)
+            if opener:
+                stage["preludes"].remove(opener)
+                hub["stages"].append({"preludes": [opener], "encounter": None,
+                                      "success": None, "fail": None})
+                break
+
     # The nodeless "Entrance" record fires when the dungeon starts: its
     # content opens the first mapped room.
     mapped = [room for room in rooms if room["node"]]

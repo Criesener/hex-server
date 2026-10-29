@@ -2122,6 +2122,7 @@ def test_warren_variant_follows_the_dryad_outcome():
 
 TRANQUIL_DREAM = "d657fcad-9dbe-4acc-bb62-2495fd4a4628"
 TRANQUIL_DREAM_ENTRANCE = "66be7540-866b-496b-bbf5-d33bdfb05ab1"
+SISTER_MIDNIGHT_GREETING = "d14cc045-1427-4ad6-94ef-9c1629ab1bb2"
 TIPI_CONVERSATION = "1aa34077-f97a-4cdd-8bb7-3644befd8954"
 AZ1_DUNGEON_ENTRANCES = ("Node008", "Node011", "Node024", "Node040", "Node068")
 _CONVERSATION_NAMES = {}
@@ -2355,6 +2356,22 @@ def test_tranquil_dream_entrance_starts_its_dungeon():
                   if not loc["Data"]["visible"]}
         assert {"NodeB", "NodeG"} <= hidden, hidden
         _assert_client_contract(db, state)
+        # The Dream hub: Sister Midnight greets before any animal is shown.
+        state = client.event(camp_id, "conv_done")
+        state = client.startloc(camp_id, "NodeG")
+        assert state["ALoc"] == "NodeG", state["ALoc"]
+        hub = next(loc["Data"] for loc in state["VisLocs"]
+                   if loc["Data"]["node"] == "NodeG")
+        assert hub["type"] == "Convo", hub
+        assert hub["conversationId"] == SISTER_MIDNIGHT_GREETING, hub
+        animals = {"NodeB", "NodeC", "NodeD", "NodeE", "NodeF"}
+        visible = {loc["Data"]["node"] for loc in state["VisLocs"]
+                   if loc["Data"]["visible"]}
+        assert not animals & visible, visible
+        state = client.event(camp_id, "conv_done")
+        visible = {loc["Data"]["node"] for loc in state["VisLocs"]
+                   if loc["Data"]["visible"]}
+        assert animals <= visible, visible
         # Reconnecting keeps the active run.
         assert campaign._get_existing_campaign_for_champion(
             db, 6, "DUNGEON")[0] == camp_id
@@ -2375,6 +2392,10 @@ def test_tranquil_dream_run_completes_its_quest_objective():
         names = _conversation_names()
         played_names = [names[guid] for guid in played]
         assert played_names[0] == "Tranquil Dream - Wigwam", played_names
+        # Arriving in the Dream plays Sister Midnight's greeting first; the
+        # finale keeps only her second speech.
+        assert played_names[1] == "Tranquil Dream - Sister Midnight", played_names
+        assert played_names.count("Tranquil Dream - Sister Midnight") == 1
         for animal in ("Turtle", "Bear", "Eagle", "Skarn", "Spider"):
             assert (f"Tranquil Dream - The Dream {animal} Success"
                     in played_names), (animal, played_names)
