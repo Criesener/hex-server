@@ -1223,12 +1223,18 @@ def _build_az1_panorama_state(db, cid, champion_id, scene_guid, node,
         {},
     )
     faction = _quest_faction_for_champion(db, champion_id)
+    race = _race_name_for_champion(db, champion_id)
+    # A start conversation can be another quest's objective (Feather
+    # Drifting's Tranquil Dream start completes Find The Ambling Mesa).
+    other_objectives = _current_objective_conversations(db, champion_id)
     candidates = {}
     rows = pve_db.db_panorama_quest_rows(node, db)
     for (script, conversation_guid, role, row_faction, npc, priority,
-         start_hook) in rows:
+         start_hook, conversation_name) in rows:
         if not npc or not conversation_guid or not _quest_row_matches_faction(
                 row_faction, faction):
+            continue
+        if not _conversation_matches_race(conversation_name, race):
             continue
         _quest_id, quest_state = _quest_state_row(
             db, champion_id, script) if script else (None, None)
@@ -1257,6 +1263,9 @@ def _build_az1_panorama_state(db, cid, champion_id, scene_guid, node,
                 str(value) for value in _quest_objective_conversation_guids(
                     db, champion_id, script, current_objective)
             }
+        if (role == "start" and quest_state is None and
+                other_objectives.get(str(conversation_guid), set()) - {script}):
+            active_objective = True
         if active_objective:
             eligible = True
             rank = 0
@@ -1264,10 +1273,12 @@ def _build_az1_panorama_state(db, cid, champion_id, scene_guid, node,
             # A missing QUEST row is not enough to make every authored start
             # conversation available.  The catalog contains later AZ1 quest
             # starts at the same panorama; only rows with an explicit unlock
-            # hook may introduce a new quest here.  Once introduced, the
+            # hook or a hub start rule (quest_start_rules) whose prerequisites
+            # are met may introduce a new quest here.  Once introduced, the
             # normal not_complete/complete rows control that NPC.
             eligible = (
-                quest_state is None and bool(start_hook) and
+                quest_state is None and
+                (bool(start_hook) or _quest_offered_at_hub(db, script)) and
                 _quest_start_prerequisites_met(db, champion_id, script))
             rank = 2
         elif role == "complete":
@@ -1831,6 +1842,146 @@ def _conversation_matches_faction(conversation_name, faction):
     return explicit is None or explicit == str(faction).lower()
 
 
+def _race_name_for_champion(db, champ_id):
+    champ = _get_champion(db, champ_id) if champ_id else None
+    return _RACE_NAMES.get(champ[2]) if champ else None
+
+
+def _conversation_matches_race(conversation_name, race):
+    """False for a label ending with another race (" - Quest Start - Elf")."""
+    if not race:
+        return True
+    label = re.sub(r"[^a-z]", "", str(conversation_name or "").rsplit(
+        " - ", 1)[-1].lower())
+    races = {re.sub(r"[^a-z]", "", name.lower())
+             for name in _RACE_NAMES.values()}
+    return label not in races or label == re.sub(r"[^a-z]", "", race.lower())
+
+
+def _quest_locs_done(db, champ_id, quest_script, locs):
+    """Which objective locations of a quest are done (Revival DoneLoc)."""
+    _qid, state = _quest_state_row(db, champ_id, quest_script)
+    if not isinstance(state, dict):
+        return {str(loc): False for loc in locs}
+    if state.get("Finished"):
+        return {str(loc): True for loc in locs}
+    completed = {
+        str((loc.get("Data") or {}).get("node") or
+            (loc.get("Data") or {}).get("name"))
+        for loc in state.get("VisLocs") or []
+        if (loc.get("Data") or {}).get("completed")}
+    return {str(loc): str(loc) in completed for loc in locs}
+
+
+def _node_script_condition(db, champ_id, state, when):
+    """Evaluate a ``campaign_node_scripts.when_json`` condition."""
+    if not isinstance(when, dict):
+        return False
+    for key, value in when.items():
+        if key in {"started", "not_started", "finished", "not_finished"}:
+            _qid, quest = _quest_state_row(db, champ_id, str(value))
+            held = (quest is not None if key.endswith("started") else
+                    bool(quest and quest.get("Finished")))
+            if key.startswith("not_"):
+                held = not held
+        elif key in {"done", "not_done"}:
+            items = [str(item) for item in (value or [])]
+            done = _quest_locs_done(db, champ_id, items[0], items[1:]) \
+                if items else {}
+            held = (all(done.values()) if key == "done"
+                    else not any(done.values()))
+        elif key == "node_choice":
+            choices = ((((state or {}).get("PublicState") or {}).get("Data")
+                        or {}).get("node_choices") or {})
+            held = (len(value or []) == 2 and
+                    choices.get(str(value[0])) == str(value[1]))
+        elif key in {"any", "all"}:
+            results = [_node_script_condition(db, champ_id, state, item)
+                       for item in (value or [])]
+            held = any(results) if key == "any" else all(results)
+        else:
+            held = False
+        if not held:
+            return False
+    return True
+
+
+def _az1_node_script_pick(db, champ_id, node, state=None,
+                          campaign_template="AZ1"):
+    """``(conversation, gate)`` a quest-driven node shows, else None.
+
+    ``campaign_node_scripts`` holds the HEX Revival NodeScripts rules: the
+    first rule whose condition holds names the conversation by the end of
+    (else a part of) its authored name.
+    """
+    if not champ_id or not node:
+        return None
+    try:
+        rules = pve_db.db_node_script_rules(node, campaign_template, db)
+    except Exception:
+        return None
+    if not rules:
+        return None
+    faction = _quest_faction_for_champion(db, champ_id)
+    race = _race_name_for_champion(db, champ_id)
+    rows = [(str(guid), str(name or ""))
+            for guid, _trigger, _priority, name in
+            _az1_node_conversation_rows(db, node, campaign_template)
+            if _conversation_matches_faction(name, faction) and
+            _conversation_matches_race(name, race)]
+    for label, raw_when, gate in rules:
+        try:
+            when = json.loads(raw_when or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not _node_script_condition(db, champ_id, state, when):
+            continue
+        wanted = str(label or "").strip().lower()
+        match = (next((guid for guid, name in rows
+                       if name.strip().lower().endswith(wanted)), None) or
+                 next((guid for guid, name in rows
+                       if wanted in name.lower()), None))
+        if match:
+            return match, bool(gate)
+    return None
+
+
+def _az1_apply_node_scripts(db, champ_id, state):
+    """Keep quest-driven conversation nodes re-enterable (Revival rules).
+
+    Such a node shows the conversation its rules pick and stays repeatable
+    once visited, so later quest steps are reachable.  A ``gate``
+    conversation (the Blood Gate without its key) never completes the node,
+    which keeps the paths beyond it closed.
+    """
+    visits = ((((state or {}).get("PublicState") or {}).get("Data") or {})
+              .get("conversation_visits") or {})
+    changed = False
+    for loc in (state or {}).get("VisLocs") or []:
+        data = loc.setdefault("Data", {})
+        node = str(data.get("node") or "")
+        if data.get("type") != "Convo" or not node.lower().startswith("node"):
+            continue
+        picked = _az1_node_script_pick(db, champ_id, node, state)
+        if not picked:
+            continue
+        conversation, gate = picked
+        try:
+            visited = int(visits.get(node, 0) or 0) > 0
+        except (TypeError, ValueError):
+            visited = False
+        before = dict(data)
+        data["conversationId"] = conversation
+        if visited:
+            if data.get("completed"):
+                data["autostart"] = False
+            data["completed"] = False
+            data["repeatable"] = not gate
+        if data != before:
+            changed = True
+    return changed
+
+
 def _has_faction_variants(rows):
     """Whether authored rows contain explicit faction-labelled variants."""
     return any(
@@ -1897,6 +2048,10 @@ def _az1_node_conversation(db, node, state=None, campaign_template="AZ1",
         variant = _az1_masked_army_variant(db, champ_id, node=node)
         if variant:
             return variant[0]
+    scripted = _az1_node_script_pick(db, champ_id, node, state,
+                                     campaign_template)
+    if scripted:
+        return scripted[0]
     faction = _quest_faction_for_champion(db, champ_id) if champ_id else None
     if faction:
         faction_rows = [
@@ -2979,20 +3134,76 @@ def _quest_row_matches_faction(row_faction, champion_faction):
 
 # Later AZ1 quest starts share the Cave-In/Mesa panorama with the first
 # faction quests, but are unlocked by the preceding authored quest chain.
-# Keep the prerequisite in campaign metadata logic so a missing QUEST row does
-# not accidentally turn every catalogued conversation into a quest giver.
-_AZ1_QUEST_START_PREREQUISITES = {
-    "q_smoldering_dead": ("q_army_of_myth",),
-}
+# The prerequisites live in ``quest_start_rules`` (static.QUEST_START_RULE_SEEDS)
+# so a missing QUEST row does not turn every catalogued conversation into a
+# quest giver.
+def _quest_start_rule(db, quest_script):
+    """``(hub_start, requires_all, requires_any)`` of a quest, or None."""
+    try:
+        row = pve_db.db_quest_start_rule(quest_script, db)
+    except Exception:
+        return None
+    if not row:
+        return None
+    lists = []
+    for raw in row[1:3]:
+        try:
+            value = json.loads(raw or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            value = []
+        lists.append([str(item) for item in value]
+                     if isinstance(value, list) else [])
+    return bool(row[0]), lists[0], lists[1]
+
+
+def _quest_offered_at_hub(db, quest_script):
+    """Whether a hook-less quest start row may be offered (hub givers)."""
+    rule = _quest_start_rule(db, quest_script)
+    return bool(rule and rule[0])
+
+
+def _quest_finished(db, champ_id, quest_script):
+    _qid, state = _quest_state_row(db, champ_id, quest_script)
+    return bool(state and state.get("Finished"))
 
 
 def _quest_start_prerequisites_met(db, champ_id, quest_script):
-    for prerequisite in _AZ1_QUEST_START_PREREQUISITES.get(
-            str(quest_script or ""), ()):
-        _qid, state = _quest_state_row(db, champ_id, prerequisite)
-        if not state or not state.get("Finished"):
-            return False
-    return True
+    rule = _quest_start_rule(db, quest_script)
+    if not rule:
+        return True
+    _hub, requires_all, requires_any = rule
+    if not all(_quest_finished(db, champ_id, q) for q in requires_all):
+        return False
+    return not requires_any or any(
+        _quest_finished(db, champ_id, q) for q in requires_any)
+
+
+def _current_objective_conversations(db, champ_id):
+    """``{conversation: {quest scripts}}`` of active quests' current objectives."""
+    result = {}
+    for script, raw in pve_db.db_started_quest_states(champ_id, conn=db):
+        try:
+            state = json.loads(raw or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(state, dict) or state.get("Finished"):
+            continue
+        flags = state.get("Flags") or {}
+        objectives = flags.get("_quest_objectives") or []
+        try:
+            index = int(flags.get("_quest_objective_idx", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= index < len(objectives)) or not isinstance(
+                objectives[index], dict):
+            continue
+        if str(objectives[index].get("type") or "").lower() not in {
+                "conversation", "convo"}:
+            continue
+        for guid in _quest_objective_conversation_guids(
+                db, champ_id, script, objectives[index]):
+            result.setdefault(str(guid), set()).add(str(script))
+    return result
 
 
 def _quest_hook_az1_tamed_start(db, champ_id, state):
@@ -3564,20 +3775,27 @@ def _apply_az1_quest_markers(db, champ_id, state):
         turnin = False
         selected = None
         fallback = None
+        offered = set()
         for script, guid, role, row_faction in rows:
             if not _quest_row_matches_faction(row_faction, faction):
                 continue
             if fallback is None:
                 fallback = guid
             _qid, qstate = _quest_state_row(db, champ_id, script)
-            if role == "start" and qstate is None:
+            if (role == "start" and qstate is None and
+                    _quest_start_prerequisites_met(db, champ_id, script)):
                 give = True
+                offered.add(str(guid))
                 selected = selected or guid
             elif role == "complete" and _quest_is_turnin_ready(qstate):
                 turnin = True
                 selected = guid
             elif role == "not_complete" and qstate and not qstate.get("Finished"):
                 selected = selected or guid
+        scripted = _az1_node_script_pick(db, champ_id, node, state)
+        if scripted:
+            selected = scripted[0]
+            give = str(selected) in offered
         if selected is None:
             selected = fallback
         if selected and data.get("conversationId") != selected:
@@ -3631,6 +3849,8 @@ def _apply_az1_quest_markers(db, champ_id, state):
         if bool(data.get("turninquest")) != turnin:
             data["turninquest"] = turnin
             changed = True
+    if _az1_apply_node_scripts(db, champ_id, state):
+        changed = True
     return changed
 
 
@@ -6220,6 +6440,9 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
                 db, camp_id, champ_id, state.get("PanoramaSceneGuid"),
                 state.get("PanoramaNode"), area[4])
             rebuilt["Flags"] = previous_flags
+            if state.get("_conversation_reward_claims"):
+                rebuilt["_conversation_reward_claims"] = state[
+                    "_conversation_reward_claims"]
             state = rebuilt
         _save_campaign_state(db, camp_id, state)
         db.commit()
@@ -7494,6 +7717,16 @@ def push_pending_account_xp(handler):
                 f"    Account XP push failed: {exc}")
 
 
+def _record_stardust_item(db, user_id, template_guid, quantity):
+    """Stardust items also count in the stardust ledger (as pack rewards)."""
+    from db import STARDUST_TEMPLATES
+    from profile_db import db_add_stardust
+    rarity = next((key for key, guid in STARDUST_TEMPLATES.items()
+                   if guid == str(template_guid)), None)
+    if rarity:
+        db_add_stardust(user_id, rarity, quantity, conn=db)
+
+
 def _apply_conversation_rewards(handler, db, camp_id, state,
                                 conversation_guid):
     """Apply a conversation's authored reward and return AppliedUpdates.
@@ -7667,6 +7900,7 @@ def _apply_conversation_rewards(handler, db, camp_id, state,
             db_upsert_inventory_item(
                 user_id, str(template_guid), new_quantity,
                 client_item_uid=item_uid, conn=db)
+        _record_stardust_item(db, user_id, template_guid, quantity)
         applied["Items"].append({"Item": {
             "Id": item_uid,
             "TemplateID": str(template_guid),
@@ -7685,10 +7919,13 @@ def _apply_conversation_rewards(handler, db, camp_id, state,
     # display-only loot entry.  Persist the chest so it survives reconnects,
     # and return inventory_bits in Applied.Items so the campaign client adds
     # it immediately to InventoryChests and the pack-opening screen.
+    chest_guids = [str(guid) for guid in (reward.get("chest_guids") or [])
+                   if guid]
     chest_guid = (reward.get("chest_guid") or reward.get("chest_template")
                   or reward.get("pack_guid"))
     if chest_guid:
-        chest_guid = str(chest_guid)
+        chest_guids.insert(0, str(chest_guid))
+    for chest_guid in chest_guids:
         chest_id = db_create_treasure_chest(
             user_id, "00000000-0000-0000-0000-000000000000", "Promo", db,
             template_guid=chest_guid)

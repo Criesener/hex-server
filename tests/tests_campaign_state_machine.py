@@ -1154,9 +1154,13 @@ def test_az1_panorama_scene_transitions_out_of_area_on_startloc():
         panorama_npcs = {
             item["Data"]["name"] for item in panorama_state["VisLocs"]
         }
-        assert {"Ennis", "Takumi"}.issubset(panorama_npcs)
-        assert not ({"Fahrny", "Myaa", "Vincent", "Wyatt", "Rizzix"}
-                    & panorama_npcs)
+        # The hub's quest givers offer their quests (issue #38); Fahrny's
+        # Tranquil Dream start is the Find quest's objective.  Takumi only
+        # has the Tamed not-complete line, and Tamed is not active here.
+        assert {"Ennis", "Fahrny", "Myaa", "Vincent", "Wyatt",
+                "Rizzix"}.issubset(panorama_npcs), panorama_npcs
+        assert not ({"Takumi", "Feather Drifting", "Sagebrush", "Kian",
+                     "Gurtok"} & panorama_npcs)
         assert panorama_state["ALoc"] is None
         ennis = next(
             item["Data"] for item in panorama_state["VisLocs"]
@@ -1195,8 +1199,10 @@ def test_az1_panorama_uses_authored_repeat_hint_when_taming_is_in_progress():
             item["Data"]["name"]: item["Data"]
             for item in panorama["VisLocs"]
         }
-        assert locations["Takumi"]["conversationId"] == \
-            "5b385410-6ca5-41ca-b4bb-63efc8f0a57d"
+        # Takumi's "Tamed Quest" is the Underworld not-complete line
+        # (Belarius' counterpart below), not a second quest start.
+        assert locations["Takumi"]["conversationId"] == TAKUMI_TAMED_QUEST
+        assert locations["Takumi"]["givequest"] is False
         assert locations["Takumi"]["turninquest"] is False
         assert locations["Takumi"]["repeatable"] is True
         assert locations["Ennis"]["conversationId"] == \
@@ -2874,6 +2880,362 @@ def test_every_dungeon_map_keeps_the_client_contract():
         os.unlink(path)
 
 
+# --- Issue #38: hub quest starts, turn-in rewards, quest-driven nodes -------
+
+AMBLING_MESA_SCENE = "11e30dc4-542e-45a9-8b9d-2fddc48700b9"
+CAVE_IN_SCENE = "c99b4f8d-e24d-4896-9342-6ac2562a2364"
+TD_START = {"Ardent": "02977c4c-803a-465d-ae0c-b5896c3d4012",
+            "Underworld": "880690b0-0c54-4ab8-a4e2-911b8bf14f64"}
+TD_NOT_COMPLETE_ARDENT = "cfc5e05c-aa7c-481c-a4f0-e8fe43db0a8d"
+TD_END_ARDENT = "c11fc1a7-cb27-4420-88dd-5c789c77b563"
+TD_PACK = "88d29ef0-5ec7-49b1-bcc5-8f70c5c4cda5"
+TAKUMI_TAMED_QUEST = "fea95059-eda8-4305-81c9-0d6283c28656"
+USURPER_DUNGEON = "39f31d36-c96d-4858-a581-6bc4dfc90b5f"
+FORT_ROMOR_DUNGEON = "d1461f76-6483-4514-b24b-a499fb65a209"
+
+
+def _panorama(db, champion_id, scene, node):
+    """Build the hub panorama for a champion; returns ``(id, {npc: data})``."""
+    _area_id, area = area_state(db, champion_id)
+    pano_id, state = campaign._activate_az1_panorama(
+        db, champion_id, scene, node, area)
+    return pano_id, {loc["Data"]["name"]: loc["Data"]
+                     for loc in state["VisLocs"]}
+
+
+def _talk(db, champion_id, scene, node, npc):
+    """Close *npc*'s panorama conversation; returns (Applied, {npc: data})."""
+    pano_id, _npcs = _panorama(db, champion_id, scene, node)
+    state = json.loads(db.execute(
+        "SELECT state_json FROM campaigns WHERE id=?", (pano_id,)
+    ).fetchone()[0])
+    state["ALoc"] = npc
+    db.execute("UPDATE campaigns SET state_json=? WHERE id=?",
+               (json.dumps(state), pano_id))
+    db.commit()
+    responses = []
+    saved = {name: getattr(campaign, name) for name in (
+        "_send_response", "push_campspawn", "push_campupdate")}
+    campaign._send_response = lambda *args, **kwargs: \
+        responses.append(json.loads(args[1]))
+    campaign.push_campspawn = lambda *args, **kwargs: None
+    campaign.push_campupdate = lambda *args, **kwargs: None
+    try:
+        campaign._handle_sendevent(
+            SimpleNamespace(_log_req=lambda *_args: None), db,
+            {"CampID": pano_id, "Event": "conv_done", "OParms": None},
+            0, "", 0, "ServiceCampaign", "253", 0, 0)
+    finally:
+        for name, value in saved.items():
+            setattr(campaign, name, value)
+    after = responses[-1]
+    return after["Applied"], {loc["Data"]["name"]: loc["Data"]
+                              for loc in after["CurState"]["VisLocs"]}
+
+
+def _granted(applied, kind):
+    return [(item["ItemTemplate"], item["ItemQuantity"])
+            for item in applied["Completed"] if item["RCode"] == kind]
+
+
+def _reset_quests(db, champion_id):
+    db.execute("DELETE FROM campaigns WHERE champion_id=? AND "
+               "campaign_type IN ('QUEST', 'PANORAMA')", (champion_id,))
+    db.commit()
+
+
+def _finish_quest(db, champion_id, script):
+    quest_id = campaign._ensure_quest_campaign(db, champion_id, "AREA", script)
+    _qid, state = campaign._quest_state_row(db, champion_id, script)
+    state["Finished"] = "2026-10-29T00:00:00Z"
+    state["FinishReason"] = "Complete"
+    db.execute("UPDATE campaigns SET state_json=? WHERE id=?",
+               (json.dumps(state), quest_id))
+    db.commit()
+
+
+def test_hub_tranquil_dream_start_completes_find_and_grants_the_quest():
+    """Feather Drifting (Ardent) and Fahrny (Underworld) give Tranquil Dream;
+    the same conversation completes the faction's Find quest (#38)."""
+    db, path = cloned_db()
+    try:
+        for champion, scene, node, npc, faction, find in (
+                (6, AMBLING_MESA_SCENE, "Node034", "Feather Drifting",
+                 "Ardent", "az01_ar_find_ambling_mesa"),
+                (7, CAVE_IN_SCENE, "Node017", "Fahrny", "Underworld",
+                 "az01_uw_find_cave_in")):
+            _reset_quests(db, champion)
+            campaign._ensure_quest_campaign(db, champion, "AREA", find)
+            _pano, npcs = _panorama(db, champion, scene, node)
+            assert npcs[npc]["conversationId"] == TD_START[faction], npcs
+            assert npcs[npc]["givequest"] is True
+            # The other faction's giver never appears at this hub.
+            assert {"Feather Drifting", "Fahrny"} - {npc} - set(npcs)
+
+            applied, npcs = _talk(db, champion, scene, node, npc)
+            _qid, find_state = campaign._quest_state_row(db, champion, find)
+            assert find_state["FinishReason"] == "Complete", find_state
+            _qid, dream = campaign._quest_state_row(
+                db, champion, "q_tranquil_dream")
+            assert dream and not dream.get("Finished"), dream
+            assert dream["Flags"]["_quest_objective_idx"] == 0
+            # Find pays 350 gold / 350 XP with its race card and pack.
+            assert _granted(applied, "GOLD") == [("", 350)], applied
+            assert _granted(applied, "XP") == [("", 350)], applied
+            assert len(_granted(applied, "CARD")) == 1, applied
+            assert _granted(applied, "CHEST") == [(HOWLING_PLAINS_PACK, 1)]
+            assert npcs[npc]["givequest"] is False
+            assert npcs[npc]["conversationId"] != TD_START[faction]
+            assert npcs[npc]["repeatable"] is True
+        assert npcs["Fahrny"]["conversationId"] == \
+            "16658a8f-9baf-4c0d-ab80-0895cead0c4f"
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def test_finished_tranquil_dream_is_turned_in_right_away():
+    """A champion who finished the dungeon before talking to Feather
+    Drifting turns the quest in at once: 700 XP and the Tranquil Dream
+    Pack, paid only once (#38, champion 5)."""
+    db, path = cloned_db()
+    client = _DungeonClient(db)
+    try:
+        _reset_quests(db, 6)
+        _area, camp_id = _enter_dungeon(db, client, 6, "Node040")
+        run, _played = _walk_dungeon(db, client, camp_id, lose_first=False)
+        assert run["FinishReason"] == "Complete"
+        client.restore()
+        campaign._ensure_quest_campaign(
+            db, 6, "AREA", "az01_ar_find_ambling_mesa")
+        _applied, npcs = _talk(db, 6, AMBLING_MESA_SCENE, "Node034",
+                               "Feather Drifting")
+        _qid, dream = campaign._quest_state_row(db, 6, "q_tranquil_dream")
+        assert dream["Flags"]["_quest_objective_idx"] == 1, dream["Flags"]
+        assert campaign._quest_is_turnin_ready(dream)
+        feather = npcs["Feather Drifting"]
+        assert feather["conversationId"] == TD_END_ARDENT, feather
+        assert feather["turninquest"] is True
+
+        applied, npcs = _talk(db, 6, AMBLING_MESA_SCENE, "Node034",
+                              "Feather Drifting")
+        _qid, dream = campaign._quest_state_row(db, 6, "q_tranquil_dream")
+        assert dream["FinishReason"] == "Complete", dream
+        assert _granted(applied, "XP") == [("", 700)], applied
+        assert _granted(applied, "GOLD") == [], applied
+        assert _granted(applied, "CHEST") == [(TD_PACK, 1)], applied
+        assert npcs.get("Feather Drifting", {}).get("conversationId") != \
+            TD_END_ARDENT
+
+        # A repeated claim of the same turn-in pays nothing.
+        _area_id, area = area_state(db, 6)
+        again = campaign._apply_conversation_rewards(
+            None, db, _area_id, area, TD_END_ARDENT)
+        again = campaign._apply_conversation_rewards(
+            None, db, _area_id, area, TD_END_ARDENT)
+        assert again["Completed"] == [], again
+    finally:
+        client.restore()
+        db.close()
+        os.unlink(path)
+
+
+def test_hub_quests_are_offered_once_their_prerequisites_are_met():
+    """Quests.CanStart: Smoldering Dead after Army of Myth, Devonshire Keep
+    after Smoldering Dead, River of Whispers after Usurper / Fort Romor;
+    race-specific start rows stay race-specific (#38)."""
+    db, path = cloned_db()
+    try:
+        _reset_quests(db, 6)
+        _pano, npcs = _panorama(db, 6, AMBLING_MESA_SCENE, "Node034")
+        offered = {npc: data["conversationId"] for npc, data in npcs.items()
+                   if data["givequest"]}
+        assert offered.get("Sagebrush") == \
+            "b2a4d66d-7d1f-47c4-b945-9090c350cb91", offered  # Coyotle
+        assert offered.get("Myaa") == \
+            "f5db838c-4a64-4592-a77d-3961a674ab1e", offered  # Army of Myth
+        assert offered.get("Gurtok") == \
+            "6dbd2645-4d5a-4823-8d4b-44a5c748b6b0", offered
+        assert offered.get("Vincent") == \
+            "c413d141-19d7-4ff8-8fbd-d48fc095ab1a", offered
+        assert offered.get("Kian") == \
+            "aae342a7-3840-4b59-9291-6720ca9bc782", offered
+
+        campaign._ensure_quest_campaign(db, 6, "AREA", "q_army_of_myth")
+        _pano, npcs = _panorama(db, 6, AMBLING_MESA_SCENE, "Node034")
+        assert npcs["Myaa"]["givequest"] is False
+        assert npcs["Myaa"]["conversationId"] == \
+            "8a3156e1-5592-43a2-add1-ea5dd939dbfa"  # Army not complete
+        _finish_quest(db, 6, "q_army_of_myth")
+        _pano, npcs = _panorama(db, 6, AMBLING_MESA_SCENE, "Node034")
+        assert npcs["Myaa"]["conversationId"] == \
+            "b68dc08a-980a-4bbc-8c43-ee729d407de2"  # Smoldering Dead start
+        assert npcs["Myaa"]["givequest"] is True
+        _finish_quest(db, 6, "q_smoldering_dead")
+        _pano, npcs = _panorama(db, 6, AMBLING_MESA_SCENE, "Node034")
+        assert npcs["Myaa"]["conversationId"] == \
+            "149855df-5d7d-4642-a7c0-b5e80a9fe8d6"  # Devonshire Keep start
+        _finish_quest(db, 6, "az01_q_usurper")
+        _pano, npcs = _panorama(db, 6, AMBLING_MESA_SCENE, "Node034")
+        assert npcs["Sagebrush"]["conversationId"] == \
+            "26ca000f-1140-4460-9dbc-acd66c1bca82"  # starts AZ2
+        assert npcs["Sagebrush"]["givequest"] is True
+
+        _reset_quests(db, 4)
+        _pano, npcs = _panorama(db, 4, CAVE_IN_SCENE, "Node017")
+        offered = {npc: data["conversationId"] for npc, data in npcs.items()
+                   if data["givequest"]}
+        assert offered.get("Wyatt") == \
+            "ac5e54aa-9a26-4fbb-bcd2-1e2a132ed359", offered  # Vennen
+        assert offered.get("Rizzix") == \
+            "e2e39e54-4f94-48f9-b766-5c49bf273b3a", offered
+        assert offered.get("Myaa") == \
+            "9b318f71-0e94-4763-a54f-0db2f64bc740", offered
+        assert offered.get("Vincent") == \
+            "9cd16493-4c99-4f2e-8d19-ac6e840da5fe", offered
+        assert "Feather Drifting" not in npcs and "Sagebrush" not in npcs
+        _finish_quest(db, 4, "az01_q_fort_romor")
+        _pano, npcs = _panorama(db, 4, CAVE_IN_SCENE, "Node017")
+        assert npcs["Wyatt"]["conversationId"] == \
+            "19adf6bc-ab06-420f-8eb7-d7838ca1a789"  # starts AZ2
+
+        # Accepting a hub quest grants it.
+        _reset_quests(db, 6)
+        _talk(db, 6, AMBLING_MESA_SCENE, "Node034", "Sagebrush")
+        assert campaign._quest_state_row(db, 6, "az01_q_usurper")[1]
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def test_quest_turnin_rewards_are_seeded_from_the_progression_table():
+    db, path = cloned_db()
+    try:
+        def reward(guid):
+            return json.loads(db.execute(
+                "SELECT reward_json FROM conversation_rewards "
+                "WHERE conversation_guid=?", (guid,)).fetchone()[0])
+        assert reward(TD_END_ARDENT) == {"xp": 700, "chest_guid": TD_PACK}
+        assert reward("89d37843-21ec-44f5-a4bd-26d18985a02c")["gold"] == 375
+        assert reward("56154933-a36c-4718-8145-9aa09cb97af7")[
+            "chest_guids"] == [HOWLING_PLAINS_PACK] * 2
+        assert reward("08677dda-e01e-4492-96a5-a36f4f4b6ca7")["item_guid"] == \
+            "221fd370-b41c-4293-8bfe-6101304145ac"  # Chronicles sleeve
+        zila = reward("5e5ec1cd-c869-43e8-82d4-417021954440")
+        assert (zila["gold"], zila["xp"]) == (300, 300)
+        assert zila["item_guid_by_race"]
+        # An existing database gains the new keys and keeps its own values.
+        db.execute("UPDATE conversation_rewards SET reward_json=? "
+                   "WHERE conversation_guid=?",
+                   (json.dumps({"chest_guid": "custom"}),
+                    "5e5ec1cd-c869-43e8-82d4-417021954440"))
+        campaign_static = __import__("static")
+        campaign_static._merge_conversation_reward_seeds(db)
+        zila = reward("5e5ec1cd-c869-43e8-82d4-417021954440")
+        assert zila["chest_guid"] == "custom" and zila["gold"] == 300
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def test_usurper_objective_completes_on_the_usurper_dungeon():
+    db, path = cloned_db()
+    try:
+        objectives = json.loads(db.execute(
+            "SELECT objectives_json FROM quest_templates "
+            "WHERE script_name='az01_q_usurper'").fetchone()[0])
+        assert objectives[0]["dungeon"] == USURPER_DUNGEON, objectives
+        fort = json.loads(db.execute(
+            "SELECT objectives_json FROM quest_templates "
+            "WHERE script_name='az01_q_fort_romor'").fetchone()[0])
+        assert fort[0]["dungeon"] == FORT_ROMOR_DUNGEON
+        _reset_quests(db, 6)
+        campaign._ensure_quest_campaign(db, 6, "AREA", "az01_q_usurper")
+        assert not campaign._advance_dungeon_quest_objectives(
+            db, 6, {"template": FORT_ROMOR_DUNGEON})
+        assert campaign._advance_dungeon_quest_objectives(
+            db, 6, {"template": USURPER_DUNGEON})
+        _qid, usurper = campaign._quest_state_row(db, 6, "az01_q_usurper")
+        assert usurper["Flags"]["_quest_objective_idx"] == 1
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def test_takumi_tamed_quest_is_the_not_complete_conversation():
+    db, path = cloned_db()
+    try:
+        rows = db.execute(
+            "SELECT role FROM quest_conversations WHERE conversation_guid=?",
+            (TAKUMI_TAMED_QUEST,)).fetchall()
+        assert rows == [("not_complete",)], rows
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def _node(state, node):
+    return next(loc["Data"] for loc in state["VisLocs"]
+                if loc["Data"].get("node") == node)
+
+
+def test_blood_gate_opens_with_blood_beneath():
+    """Node037 shows "Locked" and stays closed until The Blood Beneath is
+    started, then "Player has Blood Key" (Revival NodeScripts)."""
+    db, path = cloned_db()
+    try:
+        _reset_quests(db, 6)
+        _area_id, state = area_state(db, 6)
+        pdata = state["PublicState"]["Data"]
+        pdata.setdefault("conversation_visits", {})["Node037"] = 1
+        gate = _node(state, "Node037")
+        gate.update({"visible": True, "completed": True})
+        campaign._hydrate_az1_area_scene_metadata(
+            db, state["VisLocs"], champ_id=6, state=state)
+        gate = _node(state, "Node037")
+        assert gate["conversationId"] == \
+            "99824fee-70f0-4c28-af1b-f91b42c1f18f", gate  # Step 1 - Locked
+        assert gate["completed"] is False and gate["repeatable"] is False
+        assert not campaign._az1_node_opens_neighbors(state, "Node037")
+
+        campaign._ensure_quest_campaign(db, 6, "AREA", "q_blood_beneath")
+        campaign._hydrate_az1_area_scene_metadata(
+            db, state["VisLocs"], champ_id=6, state=state)
+        gate = _node(state, "Node037")
+        assert gate["conversationId"] == \
+            "d5f634f7-5c69-4f54-ab07-cc099466cbf7", gate  # has Blood Key
+        assert campaign._az1_node_opens_neighbors(state, "Node037")
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def test_three_braves_starts_at_the_robot_and_follows_its_steps():
+    db, path = cloned_db()
+    try:
+        _reset_quests(db, 6)
+        _area_id, state = area_state(db, 6)
+        pick = campaign._az1_node_conversation
+        assert pick(db, "Node046", state, champ_id=6) == \
+            "df027d65-ff73-4862-aa23-ab199412edef"  # Robot - Step 1
+        assert pick(db, "Node020", state, champ_id=6) == \
+            "984c5f34-fb8b-4015-bfb8-4d8b4b78fc3a"  # Bluejay - Step 1
+        spawned, _hooks = campaign._grant_quests_for_conversation(
+            db, 6, "AZ1", "df027d65-ff73-4862-aa23-ab199412edef")
+        assert [script for _id, script, _s in spawned] == \
+            ["az01_three_braves"], spawned
+        assert pick(db, "Node046", state, champ_id=6) == \
+            "df027d65-ff73-4862-aa23-ab199412edef"
+        assert pick(db, "Node020", state, champ_id=6) == \
+            "41838c84-e651-4998-b904-c0eb82c269db"  # Bluejay - Step 2
+        campaign._advance_quest_campaign(db, 6, "az01_three_braves")
+        assert pick(db, "Node046", state, champ_id=6) == \
+            "0c7ed28b-c976-48ea-a4a6-9f2a8b3068ed"  # Install Sapphire Conduit
+    finally:
+        db.close()
+        os.unlink(path)
+
+
 if __name__ == "__main__":
     tests = [
         test_cross_zila_objective_is_linked_to_savage_lord,
@@ -2932,6 +3294,14 @@ if __name__ == "__main__":
         test_leaving_a_dungeon_returns_to_its_entrance,
         test_saramago_crater_and_johannes_bog_play_by_faction_and_choice,
         test_stale_faction_variant_locations_move_to_their_map_node,
+        test_hub_tranquil_dream_start_completes_find_and_grants_the_quest,
+        test_finished_tranquil_dream_is_turned_in_right_away,
+        test_hub_quests_are_offered_once_their_prerequisites_are_met,
+        test_quest_turnin_rewards_are_seeded_from_the_progression_table,
+        test_usurper_objective_completes_on_the_usurper_dungeon,
+        test_takumi_tamed_quest_is_the_not_complete_conversation,
+        test_blood_gate_opens_with_blood_beneath,
+        test_three_braves_starts_at_the_robot_and_follows_its_steps,
         test_every_az1_node_keeps_the_client_contract,
         test_every_dungeon_map_keeps_the_client_contract,
     ]

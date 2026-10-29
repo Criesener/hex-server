@@ -1009,6 +1009,27 @@ DDL = [
         created_at TEXT DEFAULT (datetime('now'))
     )
     """,
+    # When a hub quest may be offered (QUEST_START_RULE_SEEDS).
+    """
+    CREATE TABLE IF NOT EXISTS quest_start_rules (
+        quest_script TEXT PRIMARY KEY,
+        hub_start INTEGER NOT NULL DEFAULT 1,
+        requires_all_json TEXT NOT NULL DEFAULT '[]',
+        requires_any_json TEXT NOT NULL DEFAULT '[]'
+    )
+    """,
+    # Quest-driven map node dialogue (AZ1_NODE_SCRIPT_SEEDS).
+    """
+    CREATE TABLE IF NOT EXISTS campaign_node_scripts (
+        campaign_template TEXT NOT NULL,
+        node_id TEXT NOT NULL,
+        rule_order INTEGER NOT NULL,
+        conversation_label TEXT NOT NULL,
+        when_json TEXT NOT NULL DEFAULT '{}',
+        gate INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (campaign_template, node_id, rule_order)
+    )
+    """,
 
     # --- arena (Frost Ring Arena) -------------------------------------------
     """
@@ -1390,12 +1411,148 @@ QUEST_OBJECTIVE_ENCOUNTER_LINKS = {
     ("az01_q_cross_the_river", "Step1"): AZ1_SAVAGE_LORD_SCENE_GUID,
 }
 
+# Quest turn-in rewards (HEX Revival PROGRESSION.md "Quest rewards", the
+# reward window after the giver's last conversation, video-backed).  Keyed
+# by the authored "Quest End" conversations of both factions / races.
+AZ1_TRANQUIL_DREAM_PACK_GUID = "88d29ef0-5ec7-49b1-bcc5-8f70c5c4cda5"
+AZ1_FORT_ROMOR_PACK_GUID = "faea143f-7193-4ac1-bbb2-f79469d8ad9f"
+AZ1_USURPER_PACK_GUID = "eda1cb9f-9900-4218-a8d1-6564573a9cf2"
+AZ1_DEVONSHIRE_KEEP_PACK_GUID = "1d54da38-e03e-449c-aa2d-c9a7c0ad2cb1"
+# InventoryDeckSleeve "Chronicles of Entrath: Chapter 1 Sleeve"; sleeves are
+# player_inventory items like the account level-up sleeves.
+AZ1_CHRONICLES_SLEEVE_GUID = "221fd370-b41c-4293-8bfe-6101304145ac"
+RARE_STARDUST_ITEM_GUID = "a2a6129b-978a-40ce-9673-73588e6a40c3"
+_AZ1_QUEST_TURNIN_REWARDS = (
+    # (quest end conversations, reward)
+    (("acb21286-fb55-4f70-b772-f1da9921ca92",   # Belarius - Tamed
+      "ae89d181-062c-4c5d-85e2-6a7218baf668"),  # Takumi - Tamed
+     {"gold": 400, "xp": 400, "chest_guid": AZ1_HOWLING_PLAINS_PACK_GUID,
+      "card_guid": "ea431982-5d6c-4f26-ae01-0ed5da1754af"}),  # Containment Sphere
+    (("56154933-a36c-4718-8145-9aa09cb97af7",   # Kian - Sea Witch
+      "5e5d48c7-5234-4b3b-a0e0-f918bf9ae24c"),  # Ennis - Sea Witch
+     {"gold": 500, "xp": 400,
+      "chest_guids": [AZ1_HOWLING_PLAINS_PACK_GUID,
+                      AZ1_HOWLING_PLAINS_PACK_GUID]}),
+    (("f5a00ece-3f19-46d8-be6a-2072c7bca013",   # Bluejay - Step 4a
+      "bfaf26c8-fbfd-4c77-b09d-c18437a7661c"),  # Bluejay - Step 4b
+     {"gold": 350, "xp": 350, "item_guid": RARE_STARDUST_ITEM_GUID}),
+    (("ca37a8bb-51c2-42e1-a677-1c6d4cc207e6",   # Vincent - Gnomes (Ardent)
+      "dfcc4fa9-47f3-4826-adca-ef42d0b35c34"),  # Vincent - Gnomes (Underworld)
+     {"gold": 500, "xp": 500, "chest_guid": AZ1_HOWLING_PLAINS_PACK_GUID,
+      "card_guid": "0508927a-0e01-45c7-9413-81159898323c"}),  # Gnome Wayfarer
+    (("5c52424d-0bf0-4117-bbb5-2d6f5f6a96ff",   # Gurtok - Blood Beneath
+      "f730a712-4671-4325-8972-d902c887e125"),  # Rizzix - Blood Beneath
+     {"gold": 750, "xp": 500, "chest_guid": AZ1_HOWLING_PLAINS_PACK_GUID,
+      "card_guid": "6bd19ef3-869a-42d4-bb2b-f2eed831ef1f"}),  # Contract Killing
+    (("91f7eabb-eb17-4771-91b0-a5de3bee0126",   # Myaa - Army of Myth (Ardent)
+      "0050adc1-bef2-45c9-9131-e80fcc80fd1a"),  # Myaa - Army of Myth (Underworld)
+     {"gold": 350, "xp": 350, "chest_guid": AZ1_HOWLING_PLAINS_PACK_GUID}),
+    # Tranquil Dream / Fort Romor paid 500 / 1000 gold in early 2016 only.
+    (("c11fc1a7-cb27-4420-88dd-5c789c77b563",   # Tranquil Dream (Ardent)
+      "0ec4b919-e18c-424a-96b0-310e3452aab3"),  # Tranquil Dream (Underworld)
+     {"xp": 700, "chest_guid": AZ1_TRANQUIL_DREAM_PACK_GUID}),
+    (("cfb42bca-0ba3-4f51-9f25-5d1f8b17bc48",   # Fort Romor - Dwarf
+      "779c403b-75c7-4dd1-84fa-76b39d499dac",   # Fort Romor - Necrotic
+      "71c416b7-027e-48cb-9615-56afbe47ebad",   # Fort Romor - Shin'hare
+      "29dd6cad-099f-4439-bb02-8028cf38725a"),  # Fort Romor - Vennen
+     {"xp": 900, "chest_guid": AZ1_FORT_ROMOR_PACK_GUID}),
+    (("89d37843-21ec-44f5-a4bd-26d18985a02c",),  # Sagebrush - Usurper
+     {"gold": 375, "xp": 1000, "chest_guid": AZ1_USURPER_PACK_GUID}),
+    (("0b30f528-ad70-480c-8ac4-d10a78b29fbb",   # Myaa - Smoldering Dead (Ardent)
+      "78fc05bc-6503-4644-a84f-3109b7727ae7"),  # Myaa - Smoldering Dead (UW)
+     {"gold": 550, "xp": 1200, "chest_guid": AZ1_HOWLING_PLAINS_PACK_GUID}),
+    (("08677dda-e01e-4492-96a5-a36f4f4b6ca7",   # Myaa - Devonshire Keep (Ardent)
+      "abb502ef-fee9-4e44-b11a-d56d5fae6680"),  # Myaa - Devonshire Keep (UW)
+     {"gold": 600, "xp": 1500, "chest_guid": AZ1_DEVONSHIRE_KEEP_PACK_GUID,
+      "item_guid": AZ1_CHRONICLES_SLEEVE_GUID}),
+)
+AZ1_QUEST_TURNIN_REWARD_SEEDS = [
+    (guid, json.dumps(reward, sort_keys=True), 1)
+    for guids, reward in _AZ1_QUEST_TURNIN_REWARDS for guid in guids
+]
+
+# Hub quests that may be offered without a start hook, and what must be
+# finished first (HEX Revival Quests.CanStart).  ``requires_all``: every
+# listed quest finished; ``requires_any``: at least one of them.
+QUEST_START_RULE_SEEDS = (
+    # (quest_script, hub_start, requires_all, requires_any)
+    ("q_tranquil_dream", 1, (), ()),
+    ("az01_q_usurper", 1, (), ()),
+    ("az01_q_fort_romor", 1, (), ()),
+    ("q_army_of_myth", 1, (), ()),
+    ("q_blood_beneath", 1, (), ()),
+    # Start only; the gnome picker/route mechanics are not implemented.
+    ("q_gnomes_come_home", 1, (), ()),
+    ("q_smoldering_dead", 1, ("q_army_of_myth",), ()),
+    ("q_devonshire_keep", 1, ("q_smoldering_dead",), ()),
+    ("q_go_to_az2", 1, (), ("az01_q_usurper", "az01_q_fort_romor")),
+)
+
+# Authored quest conversations the extracted catalog lacks.
+QUEST_CONVERSATION_SEEDS = (
+    # River of Whispers: "Sagebrush/Wyatt starts AZ2" (Revival Quests.RoleOf).
+    ("q_go_to_az2", "26ca000f-1140-4460-9dbc-acd66c1bca82", "AZ1", "Node034",
+     "Sagebrush", "start", "Ardent",
+     "AZ1 - Node 34 - Sagebrush starts AZ2 - Ardent", "", '{"faction": "Ardent"}',
+     0, 1),
+    ("q_go_to_az2", "19adf6bc-ab06-420f-8eb7-d7838ca1a789", "AZ1", "Node017",
+     "Wyatt", "start", "Underworld",
+     "AZ1 - Node 17 - Wyatt starts AZ2 - Underworld", "",
+     '{"faction": "Underworld"}', 0, 1),
+    # Three Braves starts on the robot's first conversation (Revival
+    # Quests.OnAreaConversationDone "ROBOT - STEP 1").
+    ("az01_three_braves", "df027d65-ff73-4862-aa23-ab199412edef", "AZ1",
+     "Node046", "Robot", "start", "", "AZ1 - Node 46 - Robot - Step 1", "",
+     "{}", 0, 1),
+)
+
+# Quest-driven node dialogue (HEX Revival NodeScripts.cs): for each node the
+# first rule whose condition holds names the conversation (a name ending
+# with, else containing, the label).  Conditions: started / not_started /
+# finished / not_finished: a quest script; done / not_done: [script, loc...]
+# (every / none of the objective locations completed, a finished quest counts
+# as done); node_choice: [node, event]; any / all: lists of conditions.  A
+# ``gate`` conversation keeps the way closed: its node is not completed.
+_BRAVES = "az01_three_braves"
+AZ1_NODE_SCRIPT_SEEDS = {
+    "Node046": (
+        ("Robot - Step 1", {"any": [
+            {"not_started": _BRAVES},
+            {"not_done": [_BRAVES, "Step1", "Step1B"]}]}, 0),
+        ("Robot - Step 2 - Install",
+         {"done": [_BRAVES, "Step1"], "not_done": [_BRAVES, "Step1B"]}, 0),
+        ("Robot - Step 2a", {"not_done": [_BRAVES, "Step2"]}, 0),
+        ("Robot - Step 3 - Install", {"not_done": [_BRAVES, "Step2B"]}, 0),
+        ("Robot - Step 3a", {"not_done": [_BRAVES, "Step3"]}, 0),
+        ("Robot - Step 4", {"not_done": [_BRAVES, "Step3B"]}, 0),
+        ("Robot - Step 3a", {}, 0),
+    ),
+    "Node020": (
+        ("Bluejay - Step 1", {"not_started": _BRAVES}, 0),
+        ("Bluejay - Step 2", {"not_done": [_BRAVES, "Step2"]}, 0),
+        ("Bluejay - Step 3", {"not_done": [_BRAVES, "Step3C"]}, 0),
+        # The robot's install/keep answer is not recorded yet, so 4b wins.
+        ("Bluejay - Step 4a", {"not_finished": _BRAVES,
+                               "node_choice": ["Node046", "choice_install"]},
+         0),
+        ("Bluejay - Step 4b", {"not_finished": _BRAVES}, 0),
+        ("Bluejay - Step 5", {}, 0),
+    ),
+    # Blood Gate: open with the Blood Key Rizzix / Gurtok give with "The
+    # Blood Beneath".
+    "Node037": (
+        ("Blood Gate - Step 2", {"started": "q_blood_beneath"}, 0),
+        ("Blood Gate - Step 1", {}, 1),
+    ),
+}
+
 CONVERSATION_REWARD_SEEDS = [
     # The Find quests complete at their faction-specific elder conversations;
     # each race receives its AZ1 base card and one Howling Plains pack.
     *[(guid, json.dumps({
         "card_guid_by_race": rewards,
         "chest_guid": AZ1_HOWLING_PLAINS_PACK_GUID,
+        "gold": 350, "xp": 350,
     }, sort_keys=True), 1)
       for guid, rewards in AZ1_FIND_QUEST_CARD_REWARDS.items()],
     # Cross Zila River completes at Weston's success conversation.  Equipment
@@ -1404,6 +1561,7 @@ CONVERSATION_REWARD_SEEDS = [
     # also includes one Howling Plains campaign pack for every race.
     ("5e5ec1cd-c869-43e8-82d4-417021954440",
      json.dumps({"chest_guid": AZ1_HOWLING_PLAINS_PACK_GUID,
+                 "gold": 300, "xp": 300,
                  "item_guid_by_race": AZ1_CROSS_ZILA_ITEM_REWARDS},
                 sort_keys=True), 1),
     # The authored quest record stores Warren's champion GUID in its final
@@ -1411,7 +1569,8 @@ CONVERSATION_REWARD_SEEDS = [
     # also awards the AZ1 Campaign Booster.
     ("08b9b8ab-2100-4f8d-87b0-18369eb4ecb4",
      json.dumps({"card_guid_by_race": AZ1_CROSS_ZODIAC_CARD_REWARDS,
-                 "chest_guid": AZ1_HOWLING_PLAINS_PACK_GUID},
+                 "chest_guid": AZ1_HOWLING_PLAINS_PACK_GUID,
+                 "gold": 400, "xp": 300},
                 sort_keys=True), 1),
     # Shadowgrove's equipment is shown on the encounter reward panel. The
     # follow-up conversation only advances the Dryad quest and must not grant
@@ -1426,6 +1585,7 @@ CONVERSATION_REWARD_SEEDS = [
     ("463a5ea3-847f-4102-83e4-512eb0ca97ab", '{"gold": 150, "xp": 500, "chest_guid": "e748185d-e993-44a5-bbe3-bb48acb3c96e"}', 1),  # Orc
     ("5f119ac9-1018-4161-9b87-2cc23dba9c71", '{"gold": 150, "xp": 500, "chest_guid": "26f41860-aa46-418f-bf94-46fdb484160b"}', 1),  # Shin'hare
     ("49eaafb9-6645-4c04-9966-5190c4e8ca3d", '{"gold": 150, "xp": 500, "chest_guid": "a7f16a72-2975-464d-8d3a-ff6f5bfd7c3b"}', 1),  # Vennen
+    *AZ1_QUEST_TURNIN_REWARD_SEEDS,
 ]
 
 # Fixed contents of the race-specific Crayburn Castle reward chests.  These
@@ -1756,6 +1916,109 @@ def _migrate_short_tournament_ids(db):
         db.execute("DELETE FROM tournaments WHERE id=?", (old_id,))
 
     db.commit()
+
+
+def _dungeon_name_key(name):
+    """Compare quest titles with DungeonTemplate names ("The Usurper")."""
+    key = re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).strip()
+    return re.sub(r"^the ", "", key)
+
+
+def _repair_dungeon_objectives(db):
+    """Relink a Dungeon objective that names another quest's dungeon.
+
+    The Usurper's QuestTemplate names Fort Romor's DungeonTemplate, so its
+    objective could never complete.  A quest whose title names a
+    DungeonTemplate gets that template when its objective points at a
+    template of a different name; other objectives are left alone.
+    """
+    templates = {str(guid): _dungeon_name_key(name) for guid, name in
+                 db.execute("SELECT guid, name FROM dungeon_templates")}
+    by_name = {key: guid for guid, key in templates.items()}
+    for script, title, raw in db.execute(
+            "SELECT script_name, title, objectives_json "
+            "FROM quest_templates").fetchall():
+        target = by_name.get(_dungeon_name_key(title))
+        if not target:
+            continue
+        try:
+            objectives = json.loads(raw or "[]")
+        except (TypeError, ValueError):
+            continue
+        changed = False
+        for objective in objectives if isinstance(objectives, list) else []:
+            dungeon = str((objective or {}).get("dungeon") or "")
+            if (str(objective.get("type") or "").lower() == "dungeon" and
+                    dungeon in templates and dungeon != target):
+                objective["dungeon"] = target
+                changed = True
+        if changed:
+            db.execute("UPDATE quest_templates SET objectives_json=? "
+                       "WHERE script_name=?",
+                       (json.dumps(objectives, sort_keys=True), script))
+
+
+def _seed_az1_quest_progression(db):
+    """Idempotent AZ1 quest progression data (issue #38)."""
+    db.executemany(
+        "INSERT OR IGNORE INTO quest_conversations "
+        "(quest_script,conversation_guid,campaign_template,node_id,npc,"
+        "role,faction,conversation_name,start_hook,conditions_json,"
+        "priority,enabled) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        QUEST_CONVERSATION_SEEDS)
+    # Takumi's "Tamed Quest" is the Underworld counterpart of Belarius'
+    # "Tamed Quest Not Complete", not a second quest start.
+    db.execute(
+        "UPDATE quest_conversations SET role='not_complete' "
+        "WHERE quest_script='az01_tamed' AND role='start' "
+        "AND conversation_name LIKE '% - Takumi - Tamed Quest'")
+    for script, hub, requires_all, requires_any in QUEST_START_RULE_SEEDS:
+        db.execute(
+            "INSERT INTO quest_start_rules (quest_script, hub_start, "
+            "requires_all_json, requires_any_json) VALUES (?,?,?,?) "
+            "ON CONFLICT(quest_script) DO UPDATE SET "
+            "hub_start=excluded.hub_start, "
+            "requires_all_json=excluded.requires_all_json, "
+            "requires_any_json=excluded.requires_any_json",
+            (script, int(hub), json.dumps(list(requires_all)),
+             json.dumps(list(requires_any))))
+    for node, rules in AZ1_NODE_SCRIPT_SEEDS.items():
+        db.execute("DELETE FROM campaign_node_scripts "
+                   "WHERE campaign_template='AZ1' AND node_id=?", (node,))
+        db.executemany(
+            "INSERT INTO campaign_node_scripts (campaign_template, node_id, "
+            "rule_order, conversation_label, when_json, gate) "
+            "VALUES ('AZ1',?,?,?,?,?)",
+            [(node, order, label, json.dumps(when, sort_keys=True), gate)
+             for order, (label, when, gate) in enumerate(rules)])
+    _repair_dungeon_objectives(db)
+
+
+def _merge_conversation_reward_seeds(db):
+    """Add newly authored reward keys to existing conversation rewards.
+
+    Existing values win, so local edits and earlier migrations (the race
+    card/equipment maps) stay; claims live in campaign state and are kept.
+    """
+    for conversation_guid, reward_json, _one_time in CONVERSATION_REWARD_SEEDS:
+        row = db.execute(
+            "SELECT reward_json FROM conversation_rewards "
+            "WHERE conversation_guid=?", (conversation_guid,)).fetchone()
+        if not row:
+            continue
+        try:
+            existing = json.loads(row[0] or "{}")
+            seeded = json.loads(reward_json)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(existing, dict) or not existing or not seeded:
+            continue
+        merged = dict(seeded, **existing)
+        if merged != existing:
+            db.execute(
+                "UPDATE conversation_rewards SET reward_json=? "
+                "WHERE conversation_guid=?",
+                (json.dumps(merged, sort_keys=True), conversation_guid))
 
 
 def ensure_schema(db):
@@ -2118,6 +2381,7 @@ def ensure_schema(db):
                     "WHERE campaign_template=? AND node_id=? AND conversation_guid=?",
                     (json.dumps(trigger), campaign_template, node_id,
                      conversation_guid))
+        _seed_az1_quest_progression(db)
         db.commit()
         print(
             "Seeded quest metadata: templates={} conversation_links={}".format(
@@ -2262,7 +2526,11 @@ def ensure_schema(db):
         # here, so the refresh of an existing database also belongs here
         # rather than in each metadata consumer.
         try:
-            refresh_client_seed(db)
+            if refresh_client_seed(db):
+                # The refresh upserts quest rows from the client data again;
+                # reapply the AZ1 quest repairs on top of them.
+                _seed_az1_quest_progression(db)
+                db.commit()
         except Exception as exc:
             print(
                 f"Client-derived row refresh skipped ({exc}); keeping the "
@@ -2768,6 +3036,7 @@ def ensure_schema(db):
         "UPDATE conversation_rewards SET reward_json=? "
         "WHERE conversation_guid=?",
         (json.dumps({}), "4000c850-c1f7-45e4-b254-3cb1b0e9bf2b"))
+    _merge_conversation_reward_seeds(db)
     db.commit()
 
     # Seed stardust for existing users who don't have any (idempotent backfill).

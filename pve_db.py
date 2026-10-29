@@ -1110,12 +1110,28 @@ def db_panorama_quest_rows(node, conn=None):
     return _connection(conn).execute(
         "SELECT qc.quest_script, qc.conversation_guid, qc.role, qc.faction, "
         "qc.npc, qc.priority, COALESCE(NULLIF(qc.start_hook, ''), "
-        "NULLIF(qt.start_hook, ''), '') "
+        "NULLIF(qt.start_hook, ''), ''), qc.conversation_name "
         "FROM quest_conversations qc "
         "LEFT JOIN quest_templates qt ON qt.script_name=qc.quest_script "
         "WHERE qc.campaign_template='AZ1' AND qc.node_id=? "
         "AND qc.enabled=1 ORDER BY qc.priority, qc.rowid", (str(node),)
     ).fetchall()
+
+
+def db_quest_start_rule(quest_script, conn=None):
+    """Return ``(hub_start, requires_all_json, requires_any_json)``."""
+    return _connection(conn).execute(
+        "SELECT hub_start, requires_all_json, requires_any_json "
+        "FROM quest_start_rules WHERE quest_script=?",
+        (str(quest_script or ""),)).fetchone()
+
+
+def db_node_script_rules(node, campaign_template="AZ1", conn=None):
+    """Return a node's ordered dialogue rules ``(label, when_json, gate)``."""
+    return _connection(conn).execute(
+        "SELECT conversation_label, when_json, gate FROM campaign_node_scripts "
+        "WHERE campaign_template=? AND node_id=? ORDER BY rule_order",
+        (str(campaign_template or "AZ1"), str(node or ""))).fetchall()
 
 
 def db_panorama_generic_rows(node, conn=None):
