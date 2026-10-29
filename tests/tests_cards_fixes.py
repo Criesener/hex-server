@@ -2566,6 +2566,75 @@ def test_discard_positions_append_and_snapshot_order(db):
     assert [row[0] for row in snapshot] == [501, 502, 503, 504], snapshot
 
 
+def test_closed_conversation_finishes_its_paused_chain_item(db):
+    """Issue #36: Sister Midnight's start-of-game trigger opens an in-battle
+    conversation.  Closing it must release the paused chain item once (via
+    the completion marker) instead of leaving it on the chain, where every
+    pass re-ran the trigger and reopened the conversation."""
+    import hconnect_server as hcs
+    from types import SimpleNamespace
+
+    conversation = "d98d0933-afd2-4f71-b5da-32b70810301e"
+    saved = {}
+    state = {"pending_conversation": {
+                 "conversation_id": conversation, "owner_id": 5,
+                 "ability_guid": "e01ed205-0000-0000-0000-000000000000",
+                 "source_uid": 0x201, "resume_effect_order": 1},
+             "resolution_paused": True, "paused_chain_instance_id": 6,
+             "stack": [{"instance_id": 6, "kind": "trigger"}]}
+
+    class Engine:
+        def load_state(self, _session):
+            return state
+
+        def save_state(self, _session, value):
+            saved.update(value)
+
+        def stack_empty(self, value):
+            return not value.get("stack")
+
+        def current_phase(self, _value):
+            return game_engine.ETurnPhases.StartTurn
+
+    calls = []
+    handler = SimpleNamespace(
+        user_profile={"id": 5}, client_reck_id=1,
+        _checkpoint_engine=lambda _session: Engine(),
+        _fresh_game=lambda *a: game_engine.Game(1, a[1], a[2]),
+        _send_battle_events=lambda *a: calls.append("events"),
+        _push_transaction_ack=lambda *a: calls.append("ack"),
+        _priority_context_for=lambda *a: game_engine.EPriorityContext.Normal,
+        _push_main_phase_options=lambda *a: calls.append("options"))
+    handler._completed_rules_port_chain = (
+        lambda session, bstate: hcs.HCPHandler._completed_rules_port_chain(
+            handler, session, bstate))
+
+    def resume(session, bstate, completed_chain):
+        calls.append(("resume", completed_chain[1],
+                      bstate.get("completed_chain_instance_id")))
+        return True
+
+    handler._resume_completed_rules_port_chain = resume
+    handler._advance_rules_port_to_priority = (
+        lambda *a: calls.append("advance") or True)
+    chain = SimpleNamespace(peek_ability=lambda iid: object() if iid == 6
+                            else None)
+    session = SimpleNamespace(
+        _rules_port_session=SimpleNamespace(chain=chain))
+    transaction = SimpleNamespace(inner_bytes=b"")
+    with mock.patch.object(hcs, "extract_resource_guid",
+                           return_value=conversation), \
+            mock.patch("rules_port.resolution.resolve_port_ability") as rpa:
+        assert hcs.HCPHandler._resolve_pending_conversation(
+            handler, session, transaction) is True
+    assert rpa.call_count == 1, rpa.call_args_list
+    assert saved.get("completed_chain_instance_id") == 6, saved
+    assert "paused_chain_instance_id" not in saved, saved
+    assert ("resume", 6, 6) in calls, calls
+    assert calls.index(("resume", 6, 6)) < calls.index("advance"), calls
+    assert "ack" not in calls, calls
+
+
 def main():
     tests = [
         ("Twisted Fate buries on player draw",
@@ -2660,6 +2729,8 @@ def main():
          test_shards_randomly_reinsert_into_deck),
         ("Single-card reinsert stays within deck",
          test_single_card_reinsert_stays_within_deck),
+        ("Closed conversation finishes its chain item",
+         test_closed_conversation_finishes_its_paused_chain_item),
     ]
     failed = 0
     for name, fn in tests:

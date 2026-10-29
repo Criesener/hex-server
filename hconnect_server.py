@@ -5913,6 +5913,16 @@ class HCPHandler(ProfileStreamMixin):
             variables=pending.get("variables") or {},
             resume_from_order=int(pending.get("resume_effect_order", 0)),
         )
+        if not pending_state.get("resolution_paused"):
+            # The conversation's ability has finished.  Release the paused
+            # chain item and mark its BOM done, exactly like the picker
+            # prompts: otherwise the item stays on the chain and every pass
+            # re-runs it from the start, reopening the same conversation
+            # (Sister Midnight's start-of-game explain talk, issue #36).
+            completed = int(pending_state.pop(
+                "paused_chain_instance_id", 0) or 0)
+            if completed:
+                pending_state["completed_chain_instance_id"] = completed
         _be.save_state(session, pending_state)
 
         pending_input = (pending_state.get("pending_conversation") or
@@ -5924,6 +5934,25 @@ class HCPHandler(ProfileStreamMixin):
             # The prompt helper owns any replacement picker.  The current
             # packet still carries public mutations and/or class 55 itself.
             self._send_battle_events(session, game, pl_t)
+            return True
+
+        completed_chain = self._completed_rules_port_chain(
+            session, pending_state)
+        if completed_chain is not None:
+            # Publish the conversation's effects, then let the native resolver
+            # consume the completion marker and remove the chain item once.
+            self._send_battle_events(session, game, pl_t)
+            finished = self._resume_completed_rules_port_chain(
+                session, pending_state, completed_chain)
+            projected = bool(
+                finished and not pending_state.get("resolution_paused") and
+                self._advance_rules_port_to_priority(
+                    session, pl_t, ai_t, pending_state))
+            if not projected:
+                self._push_transaction_ack(session)
+            log_req(f"    Conversation resolved: "
+                    f"{pending.get('conversation_id', '')[:8]} "
+                    f"(chain item finished={finished})")
             return True
 
         if _be.stack_empty(pending_state):
