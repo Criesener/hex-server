@@ -1002,7 +1002,11 @@ def _int_attribute(context, target, param):
             target_owner_id=context.target_owner(int(target), default=None),
             source_uid=context.bstate.get("resolving_source_uid"),
             expiration_owner_id=expiration_owner)
-    context._push_modifier_card(int(target), int_attrs=attrs)
+    # Continuous effects re-apply on every event ("Your non-tamed Fennec Fox
+    # are Untamed").  An unchanged value must not re-push the card: that
+    # pulls a pending Deploy off the client's chain (issues #29/#30).
+    if value != old or tamed:
+        context._push_modifier_card(int(target), int_attrs=attrs)
     context.emit_int_attribute_gained(target, attr, old, value)
     return f"intattr {attr}={value} target={hex(int(target))}"
 

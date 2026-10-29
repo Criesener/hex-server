@@ -1090,12 +1090,19 @@ class EffectContext:
         import game_engine
         from rules_port.runtime_helpers import card_collection_for_location, owner_uid
 
-        from pvp_db import db_card_zone_details
+        from pvp_db import db_card_owner_zone_state, db_card_zone_details
         details = db_card_zone_details(
             self.session.session_id, int(target), conn=self.db)
         row = ((details[0], details[2], details[3]) if details else None)
         if not row:
             return
+        if "state" not in kwargs:
+            # CardUpdated replaces the client's whole card state.  A modifier
+            # refresh must carry the current Tapped/Attacking/CameOut bits, or
+            # the client untaps an attacker mid-combat (issue #30).
+            state_row = db_card_owner_zone_state(
+                self.session.session_id, int(target), conn=self.db)
+            kwargs["state"] = int((state_row[2] if state_row else 0) or 0)
         scid = game_engine.SessionCardId(game_engine.UID(int(target)))
         tpl, ctype, _name, cost, attack, defense, gem = \
             self.handler._card_full_data(self.game, scid, row[0])

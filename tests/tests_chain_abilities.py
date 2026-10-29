@@ -3013,9 +3013,45 @@ def test_taming_sphere_chance_either_captures_or_leaves_the_toad(db):
     assert outcomes == {"void", "warzone"}, outcomes
 
 
+def test_reapplied_untamed_aura_does_not_untap_the_attacker(db):
+    """Issues #29/#30: the Untamed aura re-applies on every event.  An
+    unchanged value must not re-push the troop, and a modifier refresh must
+    keep the card's Tapped/Attacking bits instead of sending state 0."""
+    from rules_port.context import EffectContext
+    from rules_port.triggers import dispatch_native_trigger
+    handler, bstate = _tamed_board(db)
+    attacking = int(game_engine.ECardStates.Tapped |
+                    game_engine.ECardStates.Attacking)
+    db.execute("UPDATE game_cards SET card_state=? WHERE card_uid=?",
+               (attacking, 0x501))
+    db.commit()
+    pl_t, ai_t = _pl_ai()
+    game = game_engine.Game(1, pl_t, ai_t)
+    dispatch_native_trigger(
+        db=db, handler=handler, game=game, session=SessionStub(),
+        player_uid=pl_t, ai_uid=ai_t, battle_state=bstate,
+        event_type="CardEnteredZoneEvent", source_card_id=0x901,
+        source_player_id=5,
+        data={"event_source_collection": "CastSpells",
+              "event_destination_collection": "warzone"})
+    assert _toad(db) == ("warzone", {"Untamed": 1}), _toad(db)
+    toad = [event for event in game.events
+            if isinstance(event, game_engine.CardUpdatedSessionEventArgs)
+            and int(event.card_id.uid.uid64) == 0x501]
+    assert not toad, [int(event.state) for event in toad]
+
+    game = game_engine.Game(1, pl_t, ai_t)
+    context = EffectContext.from_rules_port(
+        game, SessionStub(), db, handler, pl_t, ai_t, bstate, "modifier")
+    context._push_modifier_card(0x501)
+    states = [int(event.state) for event in game.events
+              if isinstance(event, game_engine.CardUpdatedSessionEventArgs)]
+    assert states == [attacking], states
+
 
 def _main():
     tests = (test_untamed_aura_makes_the_toad_a_taming_target,
+             test_reapplied_untamed_aura_does_not_untap_the_attacker,
              test_taming_sphere_captures_the_toad,
              test_taming_sphere_chance_either_captures_or_leaves_the_toad,
              test_construction_plans_count_the_exhausted_troops,
