@@ -2487,6 +2487,105 @@ def test_leaving_a_dungeon_returns_to_its_entrance():
         os.unlink(path)
 
 
+# Map-wide check (issue #31, part C).  Known problems the check reports on a
+# fresh database; each entry is a real, unfixed finding with its reason.  A
+# fix must remove its entry (the comparison is exact).
+KNOWN_AZ1_MAP_PROBLEMS = {
+    # The client prefab has Node023/Node026; SceneData splits them into the
+    # faction variants Node023A/B and Node026A/B, which are not prefab nodes,
+    # so Saramago Crater and Johannes Bog never get a location.
+    "Node023": ["client map node (path endpoint) has no location/LocNode, "
+                "so the client never shows it"],
+    "Node026": ["client map node (path endpoint) has no location/LocNode, "
+                "so the client never shows it"],
+}
+# SceneData locations without a client map node: never selectable, so not
+# visited (they must stay hidden; a visible one is a map problem).
+AZ1_NON_MAP_LOCATIONS = {"Node019B", "019B1", "Node019B2", "019B3", "Node019C",
+                         "Node023A", "Node023B", "Node026A", "Node026B"}
+# AZ2 has no AREA runtime yet; its data check may report only this.
+AZ2_DATA_TODO = {node: ["dungeon terrain without a DungeonTemplate entrance "
+                        "scene"]
+                 for node in ("Node002", "Node019", "Node040", "Node044")}
+
+
+def test_every_az1_node_keeps_the_client_contract():
+    """Issue #31 C: every AZ1 node passes the client contract when the map
+    is loaded, visited fresh and revisited after it was resolved."""
+    import campaign_map_check as check
+    db, path = cloned_db()
+    try:
+        area_id, state = area_state(db)
+        problems, served = check.check_area_state(db, area_id)
+        assert problems == KNOWN_AZ1_MAP_PROBLEMS, problems
+        # Deck-less scenes are never offered to GetChampionTemplate: the
+        # Tanning Dog (zero-GUID deck) is a conversation, and panorama scenes
+        # stay out of the Encounters catalog.
+        locs = {data["node"]: data for data in check._locations(served)}
+        assert locs["Node046"]["type"] == "Convo", locs["Node046"]
+        catalog = {item["Name"] for item in served["Encounters"]}
+        for node in ("Node017", "Node034", "Node049"):
+            assert locs[node]["type"] == "Panorama", locs[node]
+            assert locs[node]["encounter"] not in catalog, locs[node]
+        hidden = {node for node in AZ1_NON_MAP_LOCATIONS
+                  if not locs[node]["visible"]}
+        assert hidden == AZ1_NON_MAP_LOCATIONS, hidden
+
+        reports, skipped = check.simulate_area(db, area_id)
+        assert set(skipped) == AZ1_NON_MAP_LOCATIONS, skipped
+        prefab = set(check.client_map_nodes(db)) - set(KNOWN_AZ1_MAP_PROBLEMS)
+        prefab -= campaign._az1_path_fork_ids(db)
+        assert {r.node for r in reports} == prefab, len(reports)
+        bad = [r.line() for r in reports if not r.ok]
+        assert not bad, "\n".join(bad)
+        notes = {r.node: " ".join(r.notes) for r in reports}
+        # Gated nodes were opened (forced, or through the story), not skipped.
+        assert "forced open (hidden, quest-blocked)" in notes["Node021"]
+        for node in AZ1_DUNGEON_ENTRANCES:
+            if node != "Node011":  # Fort Romor: the safe Empty fallback
+                assert "area_dungeon -> DUNGEON" in notes[node], notes[node]
+        assert "area_panorama -> PANORAMA" in notes["Node017"]
+
+        assert not check.AREA_MAPS["AZ2"]["runtime"]
+        assert check.static_area_problems(db, "AZ2") == AZ2_DATA_TODO
+    finally:
+        db.close()
+        os.unlink(path)
+
+
+def test_every_dungeon_map_keeps_the_client_contract():
+    """Issue #31 C: every runnable DungeonTemplate plays to its end with
+    the client contract kept at every step; Crayburn's fresh state too."""
+    import campaign_map_check as check
+    db, path = cloned_db()
+    try:
+        for champion_id in (4, 6, 7):
+            assert check.check_crayburn(db, champion_id) == {}, champion_id
+        results = {name: (status, problems) for name, status, problems in
+                   check.check_dungeons(db, 6)}
+        for name in ("The Tranquil Dream", "The Usurper",
+                     "The Smoldering Dead", "Devonshire Keep"):
+            assert results[name] == ("finished", {}), (name, results[name])
+        for name in ("Fort Romor", "Castle Crayburn"):
+            assert results[name][0].startswith("known: "), results[name]
+        # AZ2 dungeons have no overworld entrance yet but already run.
+        for name in ("Brutecrown Bluff", "Great Machine Graveyard",
+                     "Ruins of Kukatan"):
+            assert results[name] == (
+                "finished (no overworld entrance yet)", {}), results[name]
+        # The Kraken's boat battles name a deck but no AI champion.
+        status, problems = results["The Kraken"]
+        assert status == "finished (no overworld entrance yet)", status
+        assert problems and all("has no AI champion" in item
+                                for items in problems.values()
+                                for item in items), problems
+        assert not [name for name, (status, _p) in results.items()
+                    if status.startswith("unavailable")], results
+    finally:
+        db.close()
+        os.unlink(path)
+
+
 if __name__ == "__main__":
     tests = [
         test_cross_zila_objective_is_linked_to_savage_lord,
@@ -2541,6 +2640,8 @@ if __name__ == "__main__":
         test_az1_dungeons_play_through_the_generic_runner,
         test_start_event_on_a_dungeon_entrance_enters_it,
         test_leaving_a_dungeon_returns_to_its_entrance,
+        test_every_az1_node_keeps_the_client_contract,
+        test_every_dungeon_map_keeps_the_client_contract,
     ]
     for test in tests:
         test()

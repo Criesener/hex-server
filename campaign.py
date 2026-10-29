@@ -1140,7 +1140,8 @@ def _activate_az1_area(db, champ_id):
     area_encounters = []
     for loc in area_locs:
         guid = (loc.get("Data") or {}).get("encounter")
-        if guid and pve_db.db_encounter_scene_exists(guid, db):
+        if guid and _scene_has_ai_deck(
+                pve_db.db_encounter_scene_runtime(guid, db)):
             if guid not in {x["Name"] for x in area_encounters}:
                 area_encounters.append({"Name": guid, "Data": {"encscene": guid}})
     state.update({"CampID": cid, "ChampID": champ_id, "TempType": "AREA",
@@ -2144,7 +2145,7 @@ def _hydrate_az1_area_scene_metadata(db, locations, champ_id=None, state=None):
                        _az1_pre_encounter_conversation(db, node, champ_id))
             runtime = (pve_db.db_encounter_scene_runtime(guid, db)
                        if prelude else None)
-            if runtime is not None and not runtime[4]:
+            if runtime is not None and not _scene_has_ai_deck(runtime):
                 # Without an AI deck there is no battle behind the prelude:
                 # the conversation is the whole visit (Node033 Indigo River,
                 # issue #23).  Promoting it to an Encounter made the client
@@ -2189,7 +2190,7 @@ def _hydrate_az1_area_scene_metadata(db, locations, champ_id=None, state=None):
     if champ_id is not None and state is not None:
         _sync_az1_quest_gates(db, champ_id, state)
         _apply_az1_quest_markers(db, champ_id, state)
-    _guard_deckless_encounters(db, locations)
+    _guard_deckless_encounters(db, locations, state)
 
 
 def _normalize_az1_dungeon_location(db, data, template, champ_id=None):
@@ -2220,12 +2221,29 @@ def _normalize_az1_dungeon_location(db, data, template, champ_id=None):
     return data
 
 
-def _guard_deckless_encounters(db, locations):
+_NO_DECK_GUIDS = {"", "00000000-0000-0000-0000-000000000000"}
+
+
+def _scene_has_ai_deck(runtime):
+    """Whether a ``db_encounter_scene_runtime`` row names a real AI deck.
+
+    The authored "no deck" reference is the zero GUID (Node046's Tanning Dog
+    scene), which is as deck-less as an empty field.
+    """
+    return bool(runtime and str(runtime[4] or "").lower() not in _NO_DECK_GUIDS)
+
+
+def _guard_deckless_encounters(db, locations, state=None):
     """Never send a battle location whose scene has no AI deck.
 
     The client builds the opponent panel from the scene's players; a scene
     without them throws in ``EncounterScene.GetChampionTemplate`` and hangs
     the map (issues #23 and #31).  Such a location is shown as ``Empty``.
+
+    The node info panel resolves any repeatable location's encounter through
+    ``GameplayState.Encounters`` and calls ``GetChampionTemplate`` as well,
+    so with *state* the catalog keeps only scenes that have an AI deck (a
+    Panorama portal keeps its scene on the location, not in the catalog).
     """
     for loc in locations or []:
         data = loc.get("Data") or {}
@@ -2234,9 +2252,15 @@ def _guard_deckless_encounters(db, locations):
         scene = data.get("encounter")
         runtime = (pve_db.db_encounter_scene_runtime(scene, db)
                    if scene else None)
-        if runtime and runtime[4]:
+        if _scene_has_ai_deck(runtime):
             continue
         data.update({"type": "Empty", "encounter": None, "autostart": False})
+    if state is not None and state.get("Encounters"):
+        state["Encounters"] = [
+            item for item in state["Encounters"]
+            if _scene_has_ai_deck(pve_db.db_encounter_scene_runtime(
+                (item.get("Data") or {}).get("encscene") or item.get("Name"),
+                db))]
 
 
 def _az1_area_scene_state(champion_race=None, rewards_json=None, db=None):
@@ -4110,7 +4134,7 @@ def _dungeon_plan(db, champ_id, template):
             encounter = pick("encounter")
             runtime = (pve_db.db_encounter_scene_runtime(encounter, db)
                        if encounter else None)
-            if encounter and not (runtime and runtime[4]):
+            if encounter and not _scene_has_ai_deck(runtime):
                 encounter = None
             preludes = [str(value).lower() for value in
                         stage.get("preludes") or [] if value]

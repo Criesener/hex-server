@@ -258,7 +258,11 @@ Both create or resume the champion's `DUNGEON` row, named after the template,
 and push a `cmpupdate` transition. If the client cannot render a dungeon,
 for example because its rooms are on nodes the prefab lacks (Fort Romor), the
 entrance is a safe `Empty` location instead. AREA hydration never sends an
-`Encounter` whose scene has no AI deck.
+`Encounter` whose scene has no AI deck. A zero-GUID deck counts as no deck,
+so Node046's Tanning Dog is a conversation. Deck-less scenes such as the
+panoramas are also kept out of `GameplayState.Encounters`, because the node
+info panel calls `GetChampionTemplate` for every repeatable location whose
+encounter it can resolve.
 
 **Run.** The run lives in the state under `DungeonRun`. The client locations
 are recomputed from it on every response:
@@ -287,6 +291,93 @@ Midnight.
   entrance. Entering again starts a fresh run.
 - **Quest granted after the dungeon is finished:** the new quest advances to
   match.
+
+## Map-wide check
+
+`campaign_map_check.py` checks that every campaign node works. It drives
+`campaign.py` through its real request handlers and decodes the responses
+the client would receive.
+
+**Client contract.** These checks run on every location of every response:
+
+| Location | Requirement |
+|---|---|
+| any | `node` is in `LocNodes`; `type` is a client `LocationType` name |
+| `Encounter` | the scene is in `Encounters`, in `encounter_scenes`, and has an AI deck with cards and an AI champion (what `EncounterScene.GetChampionTemplate` needs) |
+| `Convo` | `conversationId` is a known `ConversationTemplate` |
+| `Panorama` | the scene exists |
+| `Dungeon` (AREA) | a runnable DungeonTemplate; the only fallback is `Empty` with `dungeon_unavailable` |
+| repeatable, with an encounter in `Encounters` | the scene has an AI deck: the node info panel calls `GetChampionTemplate` |
+| dungeon terrain | never an `Encounter` |
+
+For a map it also checks the paths:
+
+- Every path endpoint of the client prefab (`campaign_node_edges`) has a
+  location.
+- No visible location sits off the prefab.
+- Every visible location is reachable from the current node over rendered,
+  unlocked paths.
+
+**AZ1 simulation.** Every client map node is visited on the same snapshot,
+following the client's rules:
+
+1. `visit_node` for an unvisited node, then `StartLoc` for an enabled,
+   unfinished location.
+2. The follow-up the client sends: `conv_done`, `start` plus a won battle,
+   `empty_done`, or a Shroom Haus choice.
+3. A revisit from a neighbour, starting with a `getcampstate` reconnect.
+
+A gated node is forced open: it is made visible and unblocked, and the visit
+starts from a completed neighbour. If hydration closes the gate again, the
+visit is retried with each story opener: the Brink Ridge blockade result,
+or each quest granted.
+
+SceneData locations that are not client map nodes (`Node019B`…, `Node023A/B`,
+`Node026A/B`) are listed as skipped.
+
+**Dungeons.** Every DungeonTemplate is planned:
+
+- A runnable dungeon is entered and played to the end with every battle won.
+- An AZ2 dungeon has no overworld entrance yet. It is still played, but its
+  findings are reported as TODO.
+- Castle Crayburn's fresh state is checked on its own code path.
+
+**AZ2** has no AREA runtime yet, so only its data is checked (paths, node
+conversations, dungeon entrances).
+
+The campaign suite runs the check on a fresh database:
+`test_every_az1_node_keeps_the_client_contract` and
+`test_every_dungeon_map_keeps_the_client_contract`. Known findings are listed
+with their reason in `KNOWN_AZ1_MAP_PROBLEMS`. The comparison is exact, so a
+fix has to remove its entry.
+
+**Live save probe.** The probe prints a per-node report (OK, PROBLEM, KNOWN,
+TODO, SKIPPED) for every campaign of every champion, or of the champions
+named with `--champion`. It exits with 1 when it finds a problem.
+
+The simulation writes campaign rows, so the probe always works on a
+temporary copy of `--db` and never changes that file. Run the schema repair
+(bootstrap) on a copy first, so the copy matches the code:
+
+```bash
+D="/path/to/HEX SHARDS OF FATE/Hex.app/Contents/Resources/Data"
+docker run --rm --user 1001:1001 -v "$D:/client-data:ro" \
+  -v /path/to/server-state:/hex/state:ro \
+  -e HEX_GAMEDATA=/client-data/gamedata -e HEX_DB_PATH=/tmp/copy.db \
+  -e HEX_RUN_TESTS_ON_BOOT=0 --entrypoint sh hex-server:latest -c '
+    cd /hex && mkdir /tmp/live && cp /hex/state/hconnect.db* /tmp/live/ &&
+    python3 -c "import sqlite3; s=sqlite3.connect(\"/tmp/live/hconnect.db\");
+d=sqlite3.connect(\"/tmp/copy.db\"); s.backup(d)" &&
+    python3 docker/docker_bootstrap.py >/dev/null 2>&1 &&
+    python3 campaign_map_check.py --db /tmp/copy.db --champion 5'
+```
+
+The probe has two options:
+
+- `--no-simulate` checks only the current states.
+- `--no-dungeons` skips the dungeon runs.
+
+A full report for one champion takes about a minute.
 
 ## QUEST
 
