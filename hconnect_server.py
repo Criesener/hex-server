@@ -3720,7 +3720,11 @@ class HCPHandler(ProfileStreamMixin):
     def _apply_card_play_costs(self, game, session, bstate, pl_t, ai_t,
                                selections, source_uid=None, scrounge=False,
                                expected_owner_id=None):
-        """Apply card-level CostInstances before a card enters the chain."""
+        """Apply card-level CostInstances before a card enters the chain.
+
+        Returns True once every selected cost is paid and False when the
+        selection is rejected (before any mutation).
+        """
         from pvp_db import db_discard_card, db_randomly_insert_deck_cards
 
         def emit_trigger(event_type, source_uid, owner_id=None, **data):
@@ -3884,6 +3888,11 @@ class HCPHandler(ProfileStreamMixin):
                 "CardScroungedEvent", int(source_uid), source_owner_id,
                 target_card_id=int(source_uid),
                 event_tac={"voided_cards": list(voided_uids)})
+        # Callers (the AI activation path) treat a falsy result as "not
+        # paid" and skip the ability.  Falling off the end returned None,
+        # so the AI exhausted its troops for Construction Plans and then
+        # never resolved the ability (issue #39).
+        return True
 
     @staticmethod
     def _set_cost_instance_bounds(cost_instance, minimum, maximum):

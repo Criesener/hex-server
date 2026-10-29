@@ -2611,6 +2611,175 @@ def test_construction_plans_count_the_exhausted_troops(db):
     assert plan_row()[0] == hornet, plan_row()
 
 
+TPL_WAR_HULK_PLANS = "4335c1aa-5c0d-4a97-b226-3a427ef2fa13"
+AG_WAR_HULK_PLANS = "3e895b0f-4809-5318-b795-da91612a977d"
+TPL_WAR_HULK = "31c62a47-0833-415b-8ad4-bdd31c9b5105"
+TPL_WORKER_BOT = "ce57cae9-c573-4098-97a6-8637711aef26"
+
+
+def _ai_plans_board(db, robots=(0x2701, 0x2801), counters=0):
+    """AI (owner 0) controls Construction Plans: War Hulk and ready Robots."""
+    for tpl in (TPL_WAR_HULK_PLANS, TPL_WAR_HULK, TPL_WORKER_BOT):
+        _copy_card(db, tpl)
+    ready = game_engine.ECardStates.StartedATurnOnYourSide
+    add_card(db, 0x2601, 0, TPL_WAR_HULK_PLANS, state=ready)
+    for uid in robots:
+        add_card(db, uid, 0, TPL_WORKER_BOT, state=ready)
+    # A ready opposing troop, as in the live Battle Tech fight: the AI's
+    # metadata policy values the Plans' "exhaust this" effect like a tap.
+    add_card(db, 0x2901, 5, TPL_WORKER_BOT, state=ready)
+    db.execute("UPDATE game_cards SET card_type=(SELECT card_type FROM "
+               "card_templates ct WHERE ct.guid=game_cards.template_guid)")
+    if counters:
+        db.execute("UPDATE game_cards SET permanent_buffs=? WHERE card_uid=?",
+                   (json.dumps({"counters": {"construction": counters}}),
+                    0x2601))
+    db.commit()
+
+
+def _ai_ability_handler(db):
+    """HandlerStub with the production cost/use bookkeeping of HCPHandler."""
+    import hconnect_server as hcs
+
+    class Handler(HandlerStub):
+        _apply_card_play_costs = hcs.HCPHandler._apply_card_play_costs
+        _card_costs_valid = hcs.HCPHandler._card_costs_valid
+        _card_uses = hcs.HCPHandler._card_uses
+        _bump_card_use = hcs.HCPHandler._bump_card_use
+        _remove_one_shot_ability = hcs.HCPHandler._remove_one_shot_ability
+        _ability_x_cost_metadata = staticmethod(
+            hcs.HCPHandler._ability_x_cost_metadata)
+
+        def _ability_requires_discard(self, _ability_guid):
+            return False
+
+    handler = Handler(db)
+    handler.sent_games = []
+    handler._send_battle_events = (
+        lambda session, game, pl_t: handler.sent_games.append(game))
+    return handler
+
+
+def _with_ai_db(db, fn):
+    import ai
+    import db as db_module
+    import hconnect_server as hcs
+    old = db_module._db, ai._db, hcs._db
+    db_module._db = ai._db = hcs._db = db
+    try:
+        return fn()
+    finally:
+        db_module._db, ai._db, hcs._db = old
+
+
+def _ai_second_main_state():
+    """The live call: the AI's Second Main resource-sink scan of permanents
+    (non-troop Plans are only scanned there)."""
+    return {"player_health": 20, "ai_health": 20, "turn_number": 3,
+            "stack": [], "ai_resources": 0, "_rules_port_attached": True,
+            "turn_phases": [game_engine.ETurnPhases.SecondMainPhase],
+            "phase_idx": 0}
+
+
+def _plans_row(db):
+    tpl, buffs = db.execute(
+        "SELECT template_guid, permanent_buffs FROM game_cards "
+        "WHERE card_uid=?", (0x2601,)).fetchone()
+    return tpl, (json.loads(buffs or "{}").get("counters") or {})
+
+
+def _tapped(db, uid):
+    state = db.execute("SELECT card_state FROM game_cards WHERE card_uid=?",
+                       (uid,)).fetchone()[0]
+    return bool(int(state or 0) & game_engine.ECardStates.Tapped)
+
+
+def test_ai_construction_plans_exhausts_robots_and_adds_counters(db):
+    """Issue #39: the AI exhausted a Robot for Construction Plans: War Hulk
+    and then nothing happened.  ``_apply_card_play_costs`` returned None on
+    success, which the AI path read as "not paid" and skipped the ability;
+    the resolution also lacked the paid cost_target_map ("for each troop
+    exhausted this way")."""
+    import ai
+    _ai_plans_board(db)
+    handler = _ai_ability_handler(db)
+    pl_t, ai_t = _pl_ai()
+    bstate = _ai_second_main_state()
+    session = SessionStub()
+
+    # decision_only (FRA/PvP hand-off) chooses both Robots, mutates nothing.
+    decision = _with_ai_db(db, lambda: ai.ai_use_warzone_ability(
+        handler, None, session, ai_t, pl_t, bstate, include_non_troops=True,
+        resource_sink=True, decision_only=True, ai_owner_id=0,
+        player_owner_id=5))
+    assert isinstance(decision, dict), decision
+    assert decision["ability_guid"] == AG_WAR_HULK_PLANS, decision
+    assert sorted(decision["cost_target_map"][0]) == [0x2701, 0x2801], decision
+    assert not _tapped(db, 0x2701) and not _tapped(db, 0x2801)
+    assert _plans_row(db)[1] == {}
+
+    assert _with_ai_db(db, lambda: ai.ai_use_warzone_ability(
+        handler, None, session, ai_t, pl_t, bstate, include_non_troops=True,
+        resource_sink=True, ai_owner_id=0, player_owner_id=5)) is True
+    assert _tapped(db, 0x2701) and _tapped(db, 0x2801)
+    tpl, counters = _plans_row(db)
+    assert tpl == TPL_WAR_HULK_PLANS and counters == {"construction": 2}, (
+        tpl, counters)
+    # The client learns the counters from a CardUpdated on the Plans.
+    updates = [ev for game in handler.sent_games for ev in game.events
+               if isinstance(ev, game_engine.CardUpdatedSessionEventArgs)
+               and int(ev.session_card_id.uid.uid64) == 0x2601
+               and list(getattr(ev, "counter_counts", None) or [])]
+    assert updates and list(updates[-1].counter_counts) == [2], updates
+    # Only the paid Robots are exhausted; the opposing troop is untouched.
+    assert not _tapped(db, 0x2901)
+
+
+def test_ai_construction_plans_transforms_at_five_counters(db):
+    """Three counters plus two exhausted Robots reach five: the counters are
+    removed and the Plans transform into War Hulk."""
+    import ai
+    _ai_plans_board(db, counters=3)
+    handler = _ai_ability_handler(db)
+    pl_t, ai_t = _pl_ai()
+    bstate = _ai_second_main_state()
+    assert _with_ai_db(db, lambda: ai.ai_use_warzone_ability(
+        handler, None, SessionStub(), ai_t, pl_t, bstate,
+        include_non_troops=True, resource_sink=True, ai_owner_id=0,
+        player_owner_id=5)) is True
+    tpl, counters = _plans_row(db)
+    assert tpl == TPL_WAR_HULK, (tpl, counters)
+    assert not any(int(v or 0) for v in counters.values()), counters
+    assert _tapped(db, 0x2701) and _tapped(db, 0x2801)
+    assert db.execute("SELECT template_guid FROM game_cards WHERE card_uid=?",
+                      (0x2901,)).fetchone()[0] == TPL_WORKER_BOT
+
+
+def test_card_play_costs_report_payment(db):
+    """``_apply_card_play_costs`` reports True once paid and False for a
+    rejected selection, which is left untouched."""
+    _ai_plans_board(db)
+    handler = _ai_ability_handler(db)
+    pl_t, ai_t = _pl_ai()
+    game = game_engine.Game(1, pl_t, ai_t)
+    exhaust = ({"kind": "exhaust", "minimum": 1, "maximum": -1,
+                "auto": False}, (0x2701,))
+    sacrifice = ({"kind": "sacrifice", "minimum": 1, "maximum": 1,
+                  "auto": False}, (0x2801,))
+    bstate = {"stack": [], "_rules_port_attached": True}
+    paid = _with_ai_db(db, lambda: handler._apply_card_play_costs(
+        game, SessionStub(), bstate, pl_t, ai_t, [exhaust],
+        source_uid=0x2601, expected_owner_id=0))
+    assert paid is True and _tapped(db, 0x2701)
+    # The Robot belongs to the AI (owner 0), not to owner 5.
+    rejected = _with_ai_db(db, lambda: handler._apply_card_play_costs(
+        game, SessionStub(), bstate, pl_t, ai_t, [sacrifice],
+        source_uid=0x2601, expected_owner_id=5))
+    assert rejected is False
+    assert db.execute("SELECT location FROM game_cards WHERE card_uid=?",
+                      (0x2801,)).fetchone()[0] == "warzone"
+
+
 def test_dictionary_with_struct_keys_decodes(db):
     """A Dictionary whose keys are structs decoded to dict keys and failed
     the whole transaction with "unhashable type: 'dict'"."""
@@ -3192,6 +3361,9 @@ def _main():
              test_taming_sphere_captures_the_toad,
              test_taming_sphere_chance_either_captures_or_leaves_the_toad,
              test_construction_plans_count_the_exhausted_troops,
+             test_ai_construction_plans_exhausts_robots_and_adds_counters,
+             test_ai_construction_plans_transforms_at_five_counters,
+             test_card_play_costs_report_payment,
              test_gearsmith_takes_the_revealed_artifact_and_stays_in_play,
              test_gearsmith_without_an_artifact_returns_all_three,
              test_gearsmith_player_picks_the_artifact,

@@ -3684,6 +3684,10 @@ def ai_use_champion_ability(handler, game, session, ai_t, pl_t, battle_state,
         # out of the effect target set, matching the client's target-map
         # ordering and the human selector.
         sacrifice_uids = []
+        # Paid cost selections by their index in the authored additional
+        # cost targets; the chain item hands them to the resolver so "for
+        # each ... this way" effects see the paid cards.
+        cost_target_map = {}
         cost_templates = getattr(handler, "_ability_cost_templates", None)
         if cost_templates is not None:
             if getattr(session, "_rules_port_session", None) is not None:
@@ -3693,7 +3697,8 @@ def ai_use_champion_ability(handler, game, session, ai_t, pl_t, battle_state,
             used_targets = {int(target_uid)} if target_uid else set()
             candidates = []
             sacrifice_rows = []
-            for target_template_id, cost_type in cost_templates(ag):
+            for cost_index, (target_template_id, cost_type) in enumerate(
+                    cost_templates(ag)):
                 if int(cost_type) != 2:  # EAbilityCostType.Sacrifice
                     continue
                 candidates = [int(uid) for uid in legal_targets(
@@ -3722,6 +3727,8 @@ def ai_use_champion_ability(handler, game, session, ai_t, pl_t, battle_state,
                 row = sacrifice_rows[0] if sacrifice_rows else None
                 sacrifice_uid = int(row[0]) if row else candidates[0]
                 sacrifice_uids.append(sacrifice_uid)
+                cost_target_map.setdefault(int(cost_index), []).append(
+                    int(sacrifice_uid))
                 used_targets.add(sacrifice_uid)
             # A cost template that had no legal candidate is a hard failure,
             # whereas no sacrifice templates simply leaves this list empty.
@@ -3774,11 +3781,15 @@ def ai_use_champion_ability(handler, game, session, ai_t, pl_t, battle_state,
             ai_champ_scid, "uid") else 0
         inst_id = int(battle_state.get("_next_instance_id", 1))
         battle_state["_next_instance_id"] = inst_id + 1
-        _queue_stack_item(session, battle_state, {
+        stack_item = {
             "kind": "ability", "ability_guid": ag,
             "source_uid": src_uid, "target_uid": target_uid,
             "instance_id": inst_id,
-        })
+        }
+        if cost_target_map:
+            stack_item["activation_data"] = {
+                "target_map": {}, "cost_target_map": dict(cost_target_map)}
+        _queue_stack_item(session, battle_state, stack_item)
         game.push_ability_on_chain(
             ai_champ_scid, game_engine.ResourceId.from_str(ag),
             ability_instance_id=inst_id,
@@ -3798,6 +3809,32 @@ def ai_use_champion_ability(handler, game, session, ai_t, pl_t, battle_state,
                 f"sacrifice={[hex(uid) for uid in sacrifice_uids]})")
         return True
     return None if decision_only else False
+
+
+# Cost kinds whose paid cards C# records in an ability-instance list that a
+# ``CountListAttrAbilityVariable`` can read ("for each troop exhausted this
+# way").  Only exhaust is opted into the "pay as many as possible" policy.
+_SCALING_COST_LISTS = {"exhaust": "ExhaustedCards"}
+
+
+def _ability_counts_paid_list(graph, list_name):
+    """True when the ability's effect scales with the cards paid for a cost.
+
+    Data-driven: the authored ``m_Variables`` hold a
+    ``CountListAttrAbilityVariable`` whose ``m_ListAttrName`` is the list the
+    paid cost fills (Construction Plans count ``ExhaustedCards``).
+    """
+    for variable in tuple(getattr(graph, "variables", ()) or ()):
+        type_name = str(getattr(variable, "type_name", "") or "")
+        fields = getattr(variable, "fields", None)
+        if fields is None and isinstance(variable, dict):
+            fields = variable
+            type_name = str(variable.get("_t", "") or "")
+        if not type_name.endswith("CountListAttrAbilityVariable"):
+            continue
+        if str((fields or {}).get("m_ListAttrName") or "") == list_name:
+            return True
+    return False
 
 
 def _ai_select_ability_costs(handler, session, battle_state, ability_guid,
@@ -3867,6 +3904,16 @@ def _ai_select_ability_costs(handler, session, battle_state, ability_guid,
                 if len(candidates) < minimum and not cost.allow_best_effort_minimum:
                     return None
                 take = minimum if maximum < 0 else min(minimum, maximum)
+                scaling_list = _SCALING_COST_LISTS.get(str(cost.kind).lower())
+                if scaling_list and _ability_counts_paid_list(
+                        graph, scaling_list):
+                    # The effect counts the paid cards (Construction Plans:
+                    # a counter for each troop exhausted this way), so pay
+                    # with every eligible candidate up to the authored
+                    # maximum.  Other costs keep the minimum.
+                    take = (len(candidates) if maximum < 0 else
+                            min(len(candidates), maximum))
+                    take = max(take, minimum)
                 selected = (candidates[:take] if len(candidates) >= minimum
                             else candidates[:maximum] if maximum > 0
                             else candidates)
@@ -3995,6 +4042,24 @@ def ai_use_warzone_ability(handler, game, session, ai_t, pl_t, battle_state,
             from rules_port.targeting import (
                 legal_targets, target_uses_both_players,
             )
+            # Whether any authored target is chosen by the activating player.
+            # An ability whose targets all resolve from its source (the
+            # Construction Plans' "exhaust this, transform this") must not be
+            # aimed at an opposing troop by the tap/removal heuristic below:
+            # that target reached the resolver and the opponent's troop was
+            # transformed instead of the Plans (issue #39).
+            has_input_target = False
+            for target_template in target_templates:
+                target_meta = db_target_template_info(
+                    target_template, conn=_db)
+                kind = (target_meta[1] if target_meta else "") or ""
+                auto = int(target_meta[2] or 0) if target_meta else 0
+                if not (auto or kind in (
+                        "PlayerTargetTemplate",
+                        "AbilitySourceCardTargetTemplate",
+                        "AbilityCreatedTargetTemplate")):
+                    has_input_target = True
+                    break
             if resource_sink:
                 worth = True
                 # Let the authoritative resolver handle source/player/choice
@@ -4055,19 +4120,22 @@ def ai_use_warzone_ability(handler, game, session, ai_t, pl_t, battle_state,
                               for t, _ in params):
                 opp = db_warzone_troop_stats(
                     session.session_id, player_owner_id, conn=_db)
+                # Only an input-bearing target can be aimed at an opposing
+                # troop; unknown target metadata keeps the old behaviour.
+                aim_at_troop = has_input_target or not target_templates
                 best_target = None
                 for cu, _atk, bdef, dmod, dmgd, _state, _pos in opp:
                     eff = (bdef or 0) + (dmod or 0) - (dmgd or 0)
                     if dmg and eff <= dmg:
                         if best_target is None or eff < best_target[1]:
                             best_target = (int(cu), eff)
-                if best_target is not None:
+                if best_target is not None and aim_at_troop:
                     worth = True
                     target_uid = best_target[0]
                 elif dmg and opp and "champion" in text:
                     worth = True  # chip the champion
                 elif any(t == "TapCardAbilityEffectTemplate"
-                         for t, _ in params) and opp:
+                         for t, _ in params) and opp and aim_at_troop:
                     # Pure exhaustion: tap the opponent's biggest threat.
                     strong = [row for row in opp if not
                               (int(row[5] or 0) & game_engine.ECardStates.Tapped)]
@@ -4163,9 +4231,13 @@ def ai_use_warzone_ability(handler, game, session, ai_t, pl_t, battle_state,
             # Pay + resolve via the player path with AI-side state.
             bstate = battle_state
             game2 = handler._fresh_game(session, pl_t, ai_t, bstate)
-            if cost_selections and not handler._apply_card_play_costs(
+            # ``False`` means the selection was rejected before any card was
+            # touched.  Any other result means the costs are paid; from here
+            # on the activation must complete so the AI never pays an
+            # additional cost without its effect (issue #39).
+            if cost_selections and handler._apply_card_play_costs(
                     game2, session, bstate, pl_t, ai_t, cost_selections,
-                    source_uid=int(uid), expected_owner_id=ai_owner_id):
+                    source_uid=int(uid), expected_owner_id=ai_owner_id) is False:
                 continue
             from rules_port.resources import pay_resource
             resource_change = pay_resource(
@@ -4186,11 +4258,22 @@ def ai_use_warzone_ability(handler, game, session, ai_t, pl_t, battle_state,
             if discard_required:
                 ai_discard_card(handler, game2, session, pl_t, ai_t)
             from rules_port.resolution import resolve_port_ability
-            resolve_port_ability(
-                handler, game2, session, _db, pl_t, ai_t, bstate, ag,
-                source_uid=int(uid), owner_id=ai_owner_id,
-                target_map=({0: int(target_uid)}
-                            if target_uid is not None else {}))
+            try:
+                # The paid additional-cost selections travel with the
+                # activation: "for each troop exhausted this way"
+                # (Construction Plans) counts them.
+                resolve_port_ability(
+                    handler, game2, session, _db, pl_t, ai_t, bstate, ag,
+                    source_uid=int(uid), owner_id=ai_owner_id,
+                    target_map=({0: int(target_uid)}
+                                if target_uid is not None else {}),
+                    cost_target_map=dict(cost_target_map or {}))
+            except Exception as exc:
+                # The costs are already paid: finish the activation's
+                # bookkeeping and event flush instead of abandoning it.
+                import traceback
+                log_req(f"    AI ability {ag[:8]} resolve after paid costs "
+                        f"failed: {exc!r}\n{traceback.format_exc()}")
             handler._remove_one_shot_ability(
                 session, int(uid), ag, game2, pl_t, ai_t, bstate)
             # State-based effects are checked after every resolved ability,
