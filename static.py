@@ -2150,6 +2150,12 @@ def ensure_schema(db):
     # them through the battlegrounds lobby.
     _migrate_short_tournament_ids(db)
 
+    # Champion starter decks used to store card template GUIDs, which the
+    # login deck push cannot resolve; convert them to owned instance IDs.
+    from services.starter_deck import repair_template_guid_decks
+    if repair_template_guid_decks(db):
+        db.commit()
+
     # Migration: add buff JSON columns to game_cards if missing
     try:
         cols = {r[1] for r in db.execute("PRAGMA table_info(game_cards)")}

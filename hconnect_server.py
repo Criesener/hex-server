@@ -20121,63 +20121,41 @@ class HCPHandler(ProfileStreamMixin):
                     self.user_profile["id"], champ_name, race_val, cls_val,
                     gender_val, pet_name, json.dumps(starting_talents), conn=_db)
                 _db.commit()
+                resp_deck_name = f"{champ_name}'s Starter"
+                resp_deck_cards = []
 
-                # Grant starter deck cards for this race (once only per race)
+                # Every new champion gets its race's starter deck as owned
+                # card instances.  The race's cards are granted once per
+                # account; later champions of that race reuse the owned
+                # instances and only receive copies that are missing.
                 race_name = _RACE_DECK_MAP.get(race_val)
                 if race_name and race_name in _STARTER_DECKS:
-                    deck = _STARTER_DECKS[race_name]
-                    # Check if this PvE starter deck was already granted
-                    pve_template_guid = _PVE_CHAMPION_GUIDS.get(race_name, "")
-                    already_granted = False
-                    if pve_template_guid:
-                        if db_purchase_exists(
-                                self.user_profile["id"], pve_template_guid,
-                                conn=_db):
-                            already_granted = True
-                    if not already_granted:
-                        cards_granted = 0
-                        for card_guid, count in deck["cards"]:
-                            db_add_collection(
-                                self.user_profile["id"], card_guid, count,
-                                conn=_db)
-                            cards_granted += count
-                        # Create card_instances for each individual card
-                        cid = max(5000, db_next_card_instance_for_user(
-                            self.user_profile["id"], conn=_db) - 1)
-                        for card_guid, count in deck["cards"]:
-                            for _ in range(count):
-                                db_insert_card_instance(
-                                    self.user_profile["id"], cid, card_guid,
-                                    conn=_db)
-                                cid += 1
-                        # Record as a free grant in store_purchases
-                        if pve_template_guid:
-                            db_record_purchase(
-                                self.user_profile["id"],
-                                f"PvE {race_name} Starter", pve_template_guid,
-                                0, "Free", conn=_db)
-                        _db.commit()
-                        log_req(f"    Granted {cards_granted} starter deck cards for {race_name} (first grant)")
-                        self.push_cards_to_client()
+                    from db import transaction as _db_transaction
+                    from services.starter_deck import (
+                        create_champion_starter_deck, deck_card_entries)
+                    with _db_transaction() as deck_conn:
+                        starter = create_champion_starter_deck(
+                            deck_conn, self.user_profile["id"], champ_db_id,
+                            champ_name, race_name,
+                            _STARTER_DECKS[race_name]["cards"],
+                            _PVE_CHAMPION_GUIDS.get(race_name, ""))
+                        resp_deck_cards = deck_card_entries(
+                            deck_conn, self.user_profile["id"],
+                            starter["instance_ids"])
+                    resp_deck_name = starter["deck_name"]
+                    if starter["first_grant"]:
+                        log_req(f"    Granted {starter['created']} starter deck cards for {race_name} (first grant)")
                     else:
-                        log_req(f"    Starter deck for {race_name} already granted — skipping")
-
-                    # Every newly created champion needs its own starter deck,
-                    # even when this user already received the race's cards.
-                    cards_list = []
-                    for card_guid, count in deck["cards"]:
-                        cards_list.extend([card_guid] * count)
-                    cards_json = json.dumps(cards_list)
-                    deck_db_id = db_save_deck(
-                        self.user_profile["id"],
-                        f"{champ_name}'s {race_name} Deck",
-                        cards_json,
-                        pve_champion_id=champ_db_id)
-                    db_set_champion_last_deck(
-                        champ_db_id, deck_db_id, conn=_db)
-                    log_req(f"    Auto-created deck id={deck_db_id} for champion {champ_db_id}")
+                        log_req(f"    Starter deck for {race_name} already granted — "
+                                f"reused owned cards, created {starter['created']} missing")
+                    if starter["created"]:
+                        self.push_cards_to_client()
+                    log_req(f"    Auto-created deck id={starter['deck_id']} for champion "
+                            f"{champ_db_id} ({len(starter['instance_ids'])} cards)")
             else:
                 champ_db_id = 1
+                resp_deck_name = f"{champ_name}'s Starter"
+                resp_deck_cards = []
 
             champ_uid64 = (champ_db_id << 8) | 12  # 12 = UID.Type.Champion
 
@@ -20287,12 +20265,15 @@ class HCPHandler(ProfileStreamMixin):
 
             # DeckBits
             sizes.append(0); fi = len(sizes)-1; fd_start = buf.tell()
-            w("DeckBits"); sep(); w(str(fi)); sep(); w(str(ft(type_names[2]))); sep(); w("3"); sep()
+            w("DeckBits"); sep(); w(str(fi)); sep(); w(str(ft(type_names[2]))); sep(); w("25"); sep()
             # The client caches this deck using the ID and later looks it up via
             # ChampionBits.LastDeckID, so this must be the persisted deck ID.
-            wf("Id", "System.UInt64", hexlify(struct.pack("<Q", resp_last_deck_id)).decode("ascii"))
-            wf_str("DeckName", f"{champ_name}'s Starter")
-            wf("PVEChampionId", "System.UInt64", hexlify(struct.pack("<Q", champ_db_id)).decode("ascii"))
+            # PlayerProfile.AddDeck(DeckBits) fills the deck builder from
+            # CardsInDeck, so send the full persisted deck.
+            encoder.encode_deck_bits_fields(
+                buf, sizes, ft, resp_last_deck_id, resp_deck_name,
+                resp_last_deck_id, champ_db_id,
+                {"main": resp_deck_cards, "sideboard": []})
             sizes[fi] = buf.tell() - fd_start
 
             # Error (enum)
