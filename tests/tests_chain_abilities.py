@@ -3049,8 +3049,145 @@ def test_reapplied_untamed_aura_does_not_untap_the_attacker(db):
     assert states == [attacking], states
 
 
+def _ai_end_phase_cast(with_trigger):
+    """Queue a player's quick spell in the AI's End Phase (issue #35).
+
+    Mirrors ``_handle_rules_port_card_play``: the spell's response window is
+    nominated to the client; a "when you play a ruby card" trigger is queued
+    above it the way ``dispatch_native_trigger`` does it (C#
+    WaitForTriggeredAbilitiesAction: the ACTIVE player, here the AI, responds
+    first).  Returns the handler, session, port, damage log and AI calls.
+    """
+    import ai as ai_mod
+    import hconnect_server as hcs
+    from types import SimpleNamespace
+    from rules_port import AbilityResolutionState
+    from rules_port.session import AuthoritativeSession
+
+    pl_t, ai_t = _pl_ai()
+    port = AuthoritativeSession(35, (pl_t, ai_t), seed_z=1, seed_w=2)
+    port.current_turn_phase = game_engine.ETurnPhases.EndPhase
+    port.active_player_id = ai_t
+    port.action_stack.clear()
+    # Stand-in resolver: Burn deals 2, the terrain trigger 1 to the AI
+    # champion.  The test is about the chain/priority lifecycle.
+    damage = []
+    port.set_ability_resolver(
+        lambda item: damage.append(
+            (item.instance_id, 1 if item.descriptor.get("kind") == "trigger"
+             else 2)) or AbilityResolutionState.COMPLETED)
+    port.queue_projected_chain(
+        {"kind": "spell", "source_uid": 0x301, "instance_id": 5,
+         "ability_guids": []}, pl_t, first_player_id=pl_t)
+    if with_trigger:
+        port.queue_projected_chain(
+            {"kind": "trigger", "source_uid": 0x201, "instance_id": 6,
+             "ability_guid": "0119a607-0000-0000-0000-000000000000"},
+            pl_t, first_player_id=port.active_player_id)
+    # The dispatcher ticks the queued actions after the card-play projection.
+    for _ in range(16):
+        if port.action_stack.count == 0 or not port.tick():
+            break
+
+    h = object.__new__(hcs.HCPHandler)
+    h.client_reck_id = 5
+    h._send_battle_events = lambda *args, **kwargs: None
+    h._push_phase_options_empty = lambda *args, **kwargs: None
+    h._fresh_game = lambda session, pl, ai, state: game_engine.Game(1, pl, ai)
+    h._advance_rules_port_to_priority = lambda *args, **kwargs: None
+    session = SimpleNamespace(
+        session_name="", session_id=35, _rules_port_session=port,
+        turn_order={}, _rules_port_battle_state={"turn_player": "ai"})
+    ai_calls = []
+    original = ai_mod.ai_respond_to_priority
+    ai_mod.ai_respond_to_priority = (
+        lambda *args, **kwargs: ai_calls.append(args[3]) and False)
+    return h, session, port, damage, ai_calls, original
+
+
+def _resolve_after_client_pass(h, session, port):
+    """Host pass handling: client pass, AI response loop, native drive."""
+    pl_t, _ai_t = _pl_ai()
+    game = game_engine.Game(1, pl_t, game_engine.UID.make(3, 1000))
+    for _ in range(4):
+        if port.chain.is_empty:
+            break
+        assert port.pass_player_priority(pl_t), \
+            port.action_stack.priority_player_id
+        nxt, _acted = h._drive_practice_ai_priority(
+            session, port, game, pl_t, respond=True)
+        if nxt is None:
+            port.drive_until_input(max_steps=64)
+        # Practice follow-up passes after a resolver (host post-pass path).
+        import hconnect_server as hcs
+        for _f in range(8):
+            action = port.action_stack.peek()
+            if not hcs._is_practice_chain_follow_up(action, pl_t, True):
+                break
+            if not port.pass_player_priority(action.priority_player_id):
+                break
+            port.drive_until_input(max_steps=64)
+
+
+def test_player_quick_action_trigger_in_ai_end_phase_hands_priority_back(db):
+    """Issue #35: Burn + Domain of Ruby trigger in the AI's End Phase.
+
+    The trigger's response window starts at the active player (the AI).
+    Nothing drove the AI there, so the client's Resolve was rejected with
+    PlayerHasPriorityRequirement and the battle froze with both items on the
+    chain.  After the client action the host now runs the AI's response
+    window until priority is back with the client.
+    """
+    import ai as ai_mod
+    pl_t, ai_t = _pl_ai()
+    h, session, port, damage, ai_calls, original = _ai_end_phase_cast(True)
+    try:
+        assert port.chain._instance_ids == [5, 6], port.chain._instance_ids
+        # The frozen state from the live log.
+        assert port.action_stack.priority_player_id == ai_t
+
+        assert h._practice_ai_respond_after_client_action(
+            session, port, None) is True
+        # The AI got its response decision, then passed natively.
+        assert ai_calls and str(ai_calls[0]) == str(ai_t), ai_calls
+        assert str(port.action_stack.priority_player_id) == str(pl_t)
+
+        _resolve_after_client_pass(h, session, port)
+        assert port.chain.is_empty, port.chain._instance_ids
+        # Trigger above Burn resolves first: 1 + 2 damage to the AI champion.
+        assert damage == [(6, 1), (5, 2)], damage
+        assert sum(amount for _uid, amount in damage) == 3
+    finally:
+        ai_mod.ai_respond_to_priority = original
+
+
+def test_player_quick_action_without_trigger_in_ai_end_phase_unchanged(db):
+    """The no-trigger cast keeps client priority and is not touched."""
+    import ai as ai_mod
+    pl_t, _ai_t = _pl_ai()
+    h, session, port, damage, ai_calls, original = _ai_end_phase_cast(False)
+    try:
+        assert str(port.action_stack.priority_player_id) == str(pl_t)
+        assert h._practice_ai_respond_after_client_action(
+            session, port, None) is False
+        assert not ai_calls, ai_calls
+        _resolve_after_client_pass(h, session, port)
+        assert port.chain.is_empty, port.chain._instance_ids
+        assert damage == [(5, 2)], damage
+        # PvP has two real clients: the host never drives a participant.
+        h2, session2, port2, _d2, ai_calls2, _orig2 = _ai_end_phase_cast(True)
+        session2.session_name = "tourney-35"
+        assert h2._practice_ai_respond_after_client_action(
+            session2, port2, None) is False
+        assert not ai_calls2
+    finally:
+        ai_mod.ai_respond_to_priority = original
+
+
 def _main():
-    tests = (test_untamed_aura_makes_the_toad_a_taming_target,
+    tests = (test_player_quick_action_trigger_in_ai_end_phase_hands_priority_back,
+             test_player_quick_action_without_trigger_in_ai_end_phase_unchanged,
+             test_untamed_aura_makes_the_toad_a_taming_target,
              test_reapplied_untamed_aura_does_not_untap_the_attacker,
              test_taming_sphere_captures_the_toad,
              test_taming_sphere_chance_either_captures_or_leaves_the_toad,

@@ -2103,72 +2103,26 @@ class HCPHandler(ProfileStreamMixin):
                         # remains on the chain after the human's pass, with
                         # the card still in Hand and no resolver checkpoint.
                         if phase_window:
-                            client_id = transaction.player_id
-                            ai_id = game_engine.UID.make(3, 1000)
+                            # The phase driver already made decisions on the
+                            # AI's own turn. When the human is active, let the
+                            # Practice AI use the same metadata-based quick
+                            # response path before passing a combat window or
+                            # EndPhase.
                             response_phases = {
                                 game_engine.ETurnPhases.DeclareAttackPriorityWindow,
                                 game_engine.ETurnPhases.DeclareDefensePriorityWindow,
                                 game_engine.ETurnPhases.FirstStrikePriorityWindow,
                                 game_engine.ETurnPhases.EndPhase,
                             }
-                            phase = port.current_turn_phase
-                            while (next_player is not None and
-                                   not _same_uid(next_player, client_id)):
-                                # The phase driver already made decisions on
-                                # the AI's own turn. When the human is active,
-                                # let the Practice AI use the same metadata-
-                                # based quick response path before passing a
-                                # combat window or EndPhase.
-                                if (practice_window and phase in response_phases
-                                        and not _same_uid(
-                                            port.active_player_id, ai_id)
-                                        and _same_uid(next_player, ai_id)):
-                                    ai_acted = False
-                                    try:
-                                        from ai import ai_respond_to_priority
-                                        from rules_port.persistence import (
-                                            load_state as _load_response_state)
-                                        response_state = _load_response_state(
-                                            session)
-                                        # ``game`` is the event builder for the
-                                        # pass transaction already being
-                                        # handled.  _fresh_game() reattaches
-                                        # RulesPort and syncs the checkpoint;
-                                        # that rebuilds an ALL-player queue
-                                        # from the AI's priority and puts the
-                                        # already-passed human back in it.
-                                        # Reuse this builder so the AI decision
-                                        # cannot reopen the same phase window.
-                                        response_game = game
-                                        ai_acted = bool(ai_respond_to_priority(
-                                            self, response_game, session,
-                                            ai_id, game.player_uid,
-                                            response_state))
-                                        if ai_acted:
-                                            event_sink = getattr(
-                                                port, "event_sink", None)
-                                            if event_sink is not None:
-                                                event_sink.game = response_game
-                                            self._send_battle_events(
-                                                session, response_game,
-                                                game.player_uid)
-                                            port.persist()
-                                            next_player = (
-                                                port.action_stack
-                                                .priority_player_id)
-                                            break
-                                    except Exception as exc:
-                                        log_req(
-                                            "    RulesPort phase AI response "
-                                            f"failed; using pass fallback: {exc!r}")
-                                if not port.pass_player_priority(next_player):
-                                    log_req(
-                                        "    RulesPort phase AI pass DEBUG: "
-                                        f"pass_player_priority({next_player!r}) "
-                                        "returned False; priority="
-                                        f"{port.action_stack.priority_player_id!r}")
-                                    break
-                                next_player = port.action_stack.priority_player_id
+                            respond = bool(
+                                practice_window and
+                                port.current_turn_phase in response_phases and
+                                not _same_uid(port.active_player_id,
+                                              game_engine.UID.make(3, 1000)))
+                            next_player, _ai_acted = \
+                                self._drive_practice_ai_priority(
+                                    session, port, game,
+                                    transaction.player_id, respond=respond)
                         elif practice_window:
                             # A manual/triggered ability response is different
                             # from an ordinary phase window. The Practice AI
@@ -2177,59 +2131,10 @@ class HCPHandler(ProfileStreamMixin):
                             # play a useful metadata-defined quick action or
                             # pass. Do not unconditionally pass the AI here,
                             # or quick removal/combat tricks can never fire.
-                            client_id = transaction.player_id
-                            log_req("    RulesPort AI response loop DEBUG: "
-                                    f"client={client_id!r} "
-                                    f"next={next_player!r}",
-                                    level="DEBUG")
-                            while (next_player is not None and
-                                   not _same_uid(next_player, client_id)):
-                                ai_acted = False
-                                try:
-                                    from ai import ai_respond_to_priority
-                                    from rules_port.persistence import (
-                                        load_state as _load_response_state)
-                                    response_state = _load_response_state(session)
-                                    # Reuse the current transaction's Game.
-                                    # Constructing a fresh one re-syncs the
-                                    # native checkpoint and can repopulate
-                                    # participants who already passed this
-                                    # response window.
-                                    response_game = game
-                                    ai_acted = bool(ai_respond_to_priority(
-                                        self, response_game, session,
-                                        game_engine.UID.make(3, 1000),
-                                        game.player_uid, response_state))
-                                    if ai_acted:
-                                        event_sink = getattr(
-                                            port, "event_sink", None)
-                                        if event_sink is not None:
-                                            # Keep native resolver events from
-                                            # the AI response in the same event
-                                            # batch that contains its card
-                                            # movement and chain projection.
-                                            event_sink.game = response_game
-                                        self._send_battle_events(
-                                            session, response_game,
-                                            game.player_uid)
-                                        port.persist()
-                                        next_player = port.action_stack.priority_player_id
-                                        break
-                                except Exception as exc:
-                                    log_req(
-                                        "    RulesPort AI response failed; "
-                                        f"using pass fallback: {exc!r}")
-                                if not port.pass_player_priority(next_player):
-                                    log_req("    RulesPort AI pass DEBUG: "
-                                            f"pass_player_priority({next_player!r}) "
-                                            "returned False; priority="
-                                            f"{port.action_stack.priority_player_id!r}",
-                                            level="DEBUG")
-                                    break
-                                next_player = port.action_stack.priority_player_id
-                                log_req("    RulesPort AI pass DEBUG: "
-                                        f"next now {next_player!r}",
-                                        level="DEBUG")
+                            next_player, _ai_acted = \
+                                self._drive_practice_ai_priority(
+                                    session, port, game,
+                                    transaction.player_id, respond=True)
                         # A first pass only hands APNAP priority to the next
                         # player. Do not tick an as-yet-unentered action: its
                         # on_enter() may rebuild the queue, undoing that pass.
@@ -2969,6 +2874,20 @@ class HCPHandler(ProfileStreamMixin):
                     f"{[getattr(type(ev), 'CLASS_ID', 0) for ev in game.events]}")
             if game is not None and not emitted and not prompt_pending:
                     self._send_battle_events(session, game, player_uid)
+            # Practice: a client card play/ability can leave native priority
+            # with the AI (a trigger's response window starts at the active
+            # player).  Drive the AI's response before the client window is
+            # projected; otherwise the client's next pass is rejected.
+            if any(getattr(command, name, False) for name in (
+                    "is_ability_activate", "is_play_troop",
+                    "is_play_artifact", "is_play_spell", "is_play_champion",
+                    "is_play_resource", "is_set_ability_data")):
+                try:
+                    self._practice_ai_respond_after_client_action(
+                        session, port, game)
+                except Exception as exc:
+                    log_req("    RulesPort Practice AI response after client "
+                            f"action failed: {exc!r}")
             # A manual champion activation leaves a chain item pending.  The
             # native resolver emits the mutation packet, but the PvP adapter
             # still owns the client-facing response window.  Project the
@@ -8163,6 +8082,113 @@ class HCPHandler(ProfileStreamMixin):
         self._send_battle_events(session, game, pl_t)
         log_req(f"    Phase options (priority window): {len(playable)} playable "
                 f"quick actions, champ_ab={len(affordable_champ)}")
+
+    def _drive_practice_ai_priority(self, session, port, game, client_id, *,
+                                    respond=True):
+        """Run the server AI's priority until the client owns it again.
+
+        Practice has one client; the AI participant has no client to submit
+        its own response/pass.  While native priority is held by someone
+        other than ``client_id``, the AI first gets its metadata-driven
+        response decision (``ai_respond_to_priority``) when ``respond`` is set,
+        and otherwise passes through the native action.  ``game`` must be the
+        event builder of the transaction being handled: a fresh Game re-syncs
+        the native checkpoint and can repopulate participants who already
+        passed this window.
+
+        Returns ``(next_priority_player, ai_acted)``.  ``next_priority_player``
+        is None when every required participant passed (the caller drives the
+        native stack on).  Runs on the session's dispatch thread under its
+        transaction lock, like every other native priority mutation.
+        """
+        ai_id = game_engine.UID.make(3, 1000)
+        next_player = port.action_stack.priority_player_id
+        while (next_player is not None and
+               not _same_uid(next_player, client_id)):
+            if respond and _same_uid(next_player, ai_id):
+                try:
+                    from ai import ai_respond_to_priority
+                    from rules_port.persistence import (
+                        load_state as _load_response_state)
+                    acted = bool(ai_respond_to_priority(
+                        self, game, session, ai_id, game.player_uid,
+                        _load_response_state(session)))
+                    if acted:
+                        event_sink = getattr(port, "event_sink", None)
+                        if event_sink is not None:
+                            # Keep native resolver events from the AI
+                            # response in the same event batch that contains
+                            # its card movement and chain projection.
+                            event_sink.game = game
+                        self._send_battle_events(
+                            session, game, game.player_uid)
+                        port.persist()
+                        return port.action_stack.priority_player_id, True
+                except Exception as exc:
+                    log_req("    RulesPort AI response failed; "
+                            f"using pass fallback: {exc!r}")
+            if not port.pass_player_priority(next_player):
+                log_req("    RulesPort AI pass DEBUG: "
+                        f"pass_player_priority({next_player!r}) "
+                        "returned False; priority="
+                        f"{port.action_stack.priority_player_id!r}",
+                        level="DEBUG")
+                break
+            next_player = port.action_stack.priority_player_id
+            log_req(f"    RulesPort AI pass DEBUG: next now {next_player!r}",
+                    level="DEBUG")
+        return next_player, False
+
+    def _practice_ai_respond_after_client_action(self, session, port, game):
+        """Give the Practice AI its response after the client queued a chain item.
+
+        A card play or manual ability can push triggered abilities (a terrain
+        "when you play a ruby card" trigger, for example).  Native
+        ``WaitForTriggeredAbilitiesAction`` opens their response window at the
+        ACTIVE player, which during the AI's turn is the AI.  The client's
+        pass would then be rejected while nobody drives the AI, freezing the
+        chain.  Run the same response/pass loop the pass handler uses until
+        priority is back with the client, then re-project the client window.
+
+        Returns True when the AI held priority and was driven.
+        """
+        if (session.session_name or "").startswith("tourney-"):
+            return False
+        if getattr(port, "chain", None) is None or port.chain.is_empty:
+            return False
+        pl_t = game_engine.UID.make(244, int(self.client_reck_id))
+        ai_t = game_engine.UID.make(3, 1000)
+        priority = port.action_stack.priority_player_id
+        if priority is None or not _same_uid(priority, ai_t):
+            return False
+        from rules_port.persistence import load_state as _load_state
+        state = _load_state(session, default=lambda: {})
+        if any(state.get(key) for key in (
+                "pending_choice", "pending_trigger", "pending_deck_search",
+                "pending_conversation", "pending_discard_ability",
+                "resolution_paused")):
+            # A resolver prompt owns the client UI; its answer resumes the
+            # native chain through the continuation path.
+            return False
+        if game is None:
+            game = self._fresh_game(session, pl_t, ai_t, state)
+        next_player, acted = self._drive_practice_ai_priority(
+            session, port, game, pl_t, respond=True)
+        try:
+            port.persist()
+        except Exception as exc:
+            log_req(f"    RulesPort post-response persistence failed: {exc}")
+        log_req("    RulesPort Practice AI response after client action: "
+                f"acted={acted} priority={next_player!r}")
+        if next_player is None:
+            # Every participant passed (nothing left for the client): let the
+            # native scheduler resolve and project the next input window.
+            self._advance_rules_port_to_priority(session, pl_t, ai_t, state)
+        elif acted:
+            # The AI's quick response replaced the chain top; project the
+            # client's chain-only response window for it.
+            self._push_practice_ability_chain_window(session, port, game)
+        return True
 
     def _push_practice_ability_chain_window(self, session, port, game):
         """Give the single Practice client the chain response window.
