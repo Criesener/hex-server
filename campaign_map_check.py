@@ -636,6 +636,20 @@ def _play_location(driver, camp_id, report, stage, state, template, terrain,
             if state.get("ALoc") == name:
                 report.add(stage, ["empty_done keeps ALoc on the location"])
                 return state
+        elif kind == "CountPicker":
+            # The escort's number picker (Select Number of Gnomes): take the
+            # whole waiting party, the client's preset.
+            pdata = (state.get("PublicState") or {}).get("Data") or {}
+            count = pdata.get(str(data.get("count_var") or "").lstrip("/"), 0)
+            state, _pushes = _check_response(
+                db, report, f"{stage} count_choice",
+                driver.event(camp_id, "count_choice", [count]),
+                template, terrain)
+            if state is None:
+                return None
+            if state.get("ALoc") == name:
+                report.add(stage, ["count_choice keeps ALoc on the picker"])
+                return state
         elif kind == "ShroomHaus":
             choice = (data.get("choices") or [""])[0]
             state, _pushes = _check_response(
@@ -712,10 +726,28 @@ def gate_openers(db):
             "blockade_cleared"] = True
         _save_state(db, camp_id, state)
 
+    def escort(quest):
+        # A party in tow shows the escort's routes and arms its battles.
+        def opener(db, champion_id, camp_id):
+            spec = campaign._az1_escort(quest=quest)
+            campaign._ensure_quest_campaign(db, champion_id, "AREA", quest)
+            if not campaign._az1_escort_status(db, champion_id, spec)["found"]:
+                campaign._advance_quest_campaign(db, champion_id, quest)
+            campaign._az1_escort_update(
+                db, champion_id, spec,
+                carried=campaign._az1_escort_status(
+                    db, champion_id, spec)["waiting"])
+            state = _load_state(db, camp_id)
+            campaign._az1_escort_arm_battles(state, spec)
+            _save_state(db, camp_id, state)
+        return opener
+
     rows = db.execute(
         "SELECT script_name FROM quest_templates "
         "ORDER BY COALESCE(start_hook, '')='', script_name").fetchall()
     return ([("Brink Ridge blockade won", clear_blockade)] +
+            [(f"escort {spec['quest']} in tow", escort(spec["quest"]))
+             for spec in campaign._az1_escorts()] +
             [(f"quest {script}", grant(script)) for (script,) in rows])
 
 

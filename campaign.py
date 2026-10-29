@@ -217,6 +217,11 @@ def _quest_objective_conversation_guids(db, champ_id, quest_script,
     ]
     selected_complete = race_rows or matching_complete
     faction_rows = {str(row[0]) for row in selected_complete}
+    if (explicit and not set(explicit) & {str(row[0]) for row in rows} and
+            not _quest_objective_is_final(db, quest_script, objective)):
+        # A mid-quest objective with its own node conversation (Herbert's
+        # "Lost Gnomes - Step 1") is not completed by the quest's turn-in.
+        faction_rows = set()
     # Preserve authored neutral IDs. For explicit faction-specific IDs,
     # replace a mismatching faction with the matching completion variant.
     valid_explicit = set(explicit) & faction_neutral
@@ -236,6 +241,14 @@ def _quest_objective_conversation_guids(db, champ_id, quest_script,
                 valid_explicit.add(guid)
     result = sorted(valid_explicit | faction_rows)
     return result or explicit
+
+
+def _quest_objective_is_final(db, quest_script, objective):
+    """Whether *objective* is its QuestTemplate's last objective."""
+    template = _quest_template(db, quest_script)
+    objectives = (template or {}).get("objectives") or []
+    return (not objectives or not isinstance(objectives[-1], dict) or
+            str(objectives[-1].get("id")) == str(objective.get("id")))
 
 
 def _quest_objective_scene_guid(db, quest_script, objective):
@@ -369,7 +382,8 @@ def _ensure_quest_campaign(db, champ_id, campaign_group, quest_script=None):
         otype = obj.get("type") or "Convo"
         vislocs.append({
             "Data": {
-                "name": obj["id"], "node": obj["id"], "type": otype,
+                "name": obj["id"], "node": obj["id"],
+                "type": _quest_objective_location_type(otype),
                 "autostart": False, "autopan": False, "autotrigger": False,
                 "battle": None, "completed": False, "enabled": True, "visible": True,
                 "repeatable": False, "givequest": False, "turninquest": False,
@@ -479,23 +493,45 @@ def _advance_quest_campaign(db, champ_id, quest_script=None, scene_guid=None):
                                .get(race, {}).get("quest_end"))
         elif otype.lower() in {"convo", "conversation"}:
             conversation_id = obj.get("conversation")
-        state.setdefault("VisLocs", []).append({
-            "Data": {
-                "name": obj["id"], "node": obj["id"], "type": otype,
-                "autostart": False, "autopan": False, "autotrigger": False,
-                "battle": None, "completed": False, "enabled": True, "visible": True,
-                "repeatable": False, "givequest": False, "turninquest": False,
-                "impassable": False, "unknown": False,
-                # Encounter objectives keep their scene link (Tamed's next
-                # capture); the retry/complete bookkeeping matches on it.
-                "encounter": (obj.get("encounter")
-                              if otype.lower() == "encounter" else None),
-                "encounter_desc": None, "allow_cancel": False,
-                "conversationId": conversation_id,
-            }
-        })
-        state.setdefault("LocNodes", []).append(
-            {"Name": obj["id"], "Data": {"id": obj["id"], "type": "DEFAULT"}})
+        # Consecutive collect objectives are tracked together (Gnomes Come
+        # Home: "Current gnomes" and "Get all gnomes ... back"), so the
+        # journal shows them at once; an objective is listed only once.
+        shown = [obj]
+        if otype.lower() == "collect":
+            for later in objectives[nxt + 1:]:
+                if str(later.get("type") or "").lower() != "collect":
+                    break
+                shown.append(later)
+        listed = {(loc.get("Data") or {}).get("name")
+                  for loc in state.get("VisLocs", [])}
+        for item in shown:
+            if item["id"] in listed:
+                continue
+            item_type = item.get("type") or "Convo"
+            state.setdefault("VisLocs", []).append({
+                "Data": {
+                    "name": item["id"], "node": item["id"],
+                    "type": _quest_objective_location_type(item_type),
+                    "autostart": False, "autopan": False, "autotrigger": False,
+                    "battle": None, "completed": False, "enabled": True,
+                    "visible": True,
+                    "repeatable": False, "givequest": False,
+                    "turninquest": False,
+                    "impassable": False, "unknown": False,
+                    # Encounter objectives keep their scene link (Tamed's
+                    # next capture); the retry/complete bookkeeping matches
+                    # on it.
+                    "encounter": (item.get("encounter")
+                                  if item_type.lower() == "encounter"
+                                  else None),
+                    "encounter_desc": None, "allow_cancel": False,
+                    "conversationId": (conversation_id if item is obj
+                                       else None),
+                }
+            })
+            state.setdefault("LocNodes", []).append(
+                {"Name": item["id"],
+                 "Data": {"id": item["id"], "type": "DEFAULT"}})
         state["Flags"]["_quest_objective_idx"] = nxt
         state["ALoc"] = obj["id"]
         state["LastNode"] = obj["id"]
@@ -511,6 +547,17 @@ def _advance_quest_campaign(db, champ_id, quest_script=None, scene_guid=None):
     _save_campaign_state(db, qid, state)
     db.commit()
     return state
+
+
+def _quest_objective_location_type(objective_type):
+    """The journal location type of a quest objective.
+
+    The client parses a Location's type as a ``LocationType``; a collect
+    objective (QuestObjectiveCollect) has none, and its counter is read from
+    the quest's public script variable, so it is an ``Empty`` location.
+    """
+    kind = str(objective_type or "Convo")
+    return "Empty" if kind.lower() == "collect" else kind
 
 
 def _active_area_encounter_guid(db, champ_id):
@@ -1897,6 +1944,12 @@ def _node_script_condition(db, champ_id, state, when):
                         or {}).get("node_choices") or {})
             held = (len(value or []) == 2 and
                     choices.get(str(value[0])) == str(value[1]))
+        elif key == "visited":
+            visits = ((((state or {}).get("PublicState") or {}).get("Data")
+                       or {}).get("conversation_visits") or {})
+            held = _az1_escort_int(visits.get(str(value))) > 0
+        elif key == "escort":
+            held = _az1_escort_condition(db, champ_id, value)
         elif key in {"any", "all"}:
             results = [_node_script_condition(db, champ_id, state, item)
                        for item in (value or [])]
@@ -1962,7 +2015,10 @@ def _az1_apply_node_scripts(db, champ_id, state):
     for loc in (state or {}).get("VisLocs") or []:
         data = loc.setdefault("Data", {})
         node = str(data.get("node") or "")
-        if data.get("type") != "Convo" or not node.lower().startswith("node"):
+        if (data.get("type") != "Convo" or data.get("pre_encounter") or
+                not node.lower().startswith("node")):
+            # A battle's prelude keeps its own flow (an escort battle picks
+            # its prelude by the same rules, _az1_pre_encounter_conversation).
             continue
         picked = _az1_node_script_pick(db, champ_id, node, state)
         if not picked:
@@ -2153,6 +2209,12 @@ def _az1_pre_encounter_conversation(db, node, champ_id=None):
     Outcome and quest-turn-in conversations are deliberately excluded; those
     are selected by their respective result/quest flows.
     """
+    if _az1_escort(node=node, key="battles") is not None:
+        # An escort battle's opening follows the party (Revival NodeScripts:
+        # "Gnomes In Deck (Fight)" / "Wormoid Queen Surfaces").
+        scripted = _az1_node_script_pick(db, champ_id, node)
+        if scripted:
+            return scripted[0]
     rows = _az1_node_conversation_rows(db, node)
     candidates = []
     for guid, trigger, _priority, _name in rows:
@@ -2402,6 +2464,314 @@ def _az1_gate_battle_won(db, state, node, scene_guid):
         pdata.setdefault("gate_after_won", {})[str(node)] = True
 
 
+# ── AZ1 escorts (Gnomes Come Home, issue #38 fix 10) ─────────────────────
+# az1_node_variants.json "escorts" describes the quest; the party's counters
+# live in the QUEST state's PublicState.Data under the objectives' script
+# vars, which the client's quest tracker shows.  Nothing is cached in the
+# module: every helper reads the file and the database per call.
+
+
+def _az1_escorts():
+    """The escort quests of az1_node_variants.json (a list of dicts)."""
+    try:
+        data = json.loads(_AZ1_NODE_VARIANTS_PATH.read_text())
+    except (OSError, ValueError):
+        return []
+    return [escort for escort in data.get("escorts") or []
+            if isinstance(escort, dict) and escort.get("quest")]
+
+
+def _az1_escort(quest=None, node=None, key=None):
+    """The escort of *quest*, or the one listing *node* under *key*."""
+    for escort in _az1_escorts():
+        if quest is not None and escort.get("quest") == quest:
+            return escort
+        if node is None or key is None:
+            continue
+        value = escort.get(key)
+        if isinstance(value, dict):
+            value = [value.get("node")]
+        if str(node) in {str(item) for item in value or []}:
+            return escort
+    return None
+
+
+def _az1_escort_int(value):
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _az1_escort_status(db, champ_id, escort):
+    """The party of an escort: in tow, home, still waiting, all home."""
+    total = _az1_escort_int(escort.get("total"))
+    status = {"started": False, "found": False, "carried": 0,
+              "delivered": 0, "waiting": 0, "all_home": False,
+              "total": total}
+    if champ_id is None:
+        return status
+    quest = str(escort.get("quest"))
+    _qid, qstate = _quest_state_row(db, champ_id, quest)
+    if not isinstance(qstate, dict):
+        return status
+    pdata = (qstate.get("PublicState") or {}).get("Data") or {}
+    carried = _az1_escort_int(pdata.get(
+        (escort.get("carried") or {}).get("var")))
+    delivered = _az1_escort_int(pdata.get(
+        (escort.get("delivered") or {}).get("var")))
+    done = _quest_locs_done(db, champ_id, quest, [
+        escort.get("found"), (escort.get("delivered") or {}).get("objective")])
+    all_home = bool(qstate.get("Finished") or (total and delivered >= total) or
+                    done.get(str((escort.get("delivered") or {})
+                                 .get("objective"))))
+    status.update({
+        "started": True,
+        "found": bool(done.get(str(escort.get("found")))),
+        "carried": 0 if all_home else carried,
+        "delivered": total if all_home and total else delivered,
+        "all_home": all_home,
+    })
+    status["waiting"] = max(0, total - status["delivered"] -
+                            status["carried"])
+    return status
+
+
+def _az1_escort_condition(db, champ_id, value):
+    """``campaign_node_scripts`` ``escort`` condition (see static.py)."""
+    if not isinstance(value, dict):
+        return False
+    escort = _az1_escort(quest=value.get("quest"))
+    if escort is None:
+        return False
+    status = _az1_escort_status(db, champ_id, escort)
+    facts = {
+        "carried": status["carried"] > 0,
+        "all_home": status["all_home"],
+        "last_trip": (status["carried"] > 0 and
+                      status["delivered"] + status["carried"] >=
+                      status["total"]),
+    }
+    return all(facts.get(key) == bool(wanted)
+               for key, wanted in value.items() if key != "quest")
+
+
+def _az1_escort_armed(db, champ_id, escort):
+    """Whether the escort's battles are fought now (a party in tow, or the
+    remaining one-time battles once all are home)."""
+    status = _az1_escort_status(db, champ_id, escort)
+    return status["carried"] > 0 or status["all_home"]
+
+
+def _az1_escort_disarmed_nodes(db, champ_id):
+    """Escort battles that only play their node dialogue now (no party)."""
+    return {str(node) for escort in _az1_escorts()
+            if not _az1_escort_armed(db, champ_id, escort)
+            for node in escort.get("battles") or []}
+
+
+def _az1_escort_hidden_nodes(db, champ_id, state=None):
+    """Escort routes the map does not show: no party in tow, quest not over.
+
+    The node the champion stands on is never hidden.
+    """
+    here = {_resolve_node(state, str(value)) for value in (
+        (state or {}).get("LastNode"), (state or {}).get("ALoc")) if value}
+    hidden = set()
+    for escort in _az1_escorts():
+        status = _az1_escort_status(db, champ_id, escort)
+        if status["carried"] > 0 or status["all_home"]:
+            continue
+        hidden.update(str(node) for node in escort.get("routes") or [])
+    return hidden - here
+
+
+def _az1_escort_update(db, champ_id, escort, carried=None, delivered=None):
+    """Store the party counters in the quest state; returns that state."""
+    quest = str(escort.get("quest"))
+    qid, qstate = _quest_state_row(db, champ_id, quest)
+    if not qid or not isinstance(qstate, dict):
+        return None
+    pdata = qstate.setdefault("PublicState", {}).setdefault("Data", {})
+    for spec, value in ((escort.get("carried") or {}, carried),
+                        (escort.get("delivered") or {}, delivered)):
+        if value is not None and spec.get("var"):
+            pdata[str(spec["var"])] = int(value)
+    _save_campaign_state(db, qid, qstate)
+    db.commit()
+    qstate.setdefault("CampID", qid)
+    qstate.setdefault("ChampID", champ_id)
+    return qstate
+
+
+def _az1_escort_picker_due(db, champ_id, escort):
+    status = _az1_escort_status(db, champ_id, escort)
+    return (status["found"] and not status["all_home"] and
+            status["carried"] == 0 and status["waiting"] > 0)
+
+
+def _az1_escort_show_picker(db, champ_id, state, data, escort):
+    """Turn the picker node into the client's CountPicker location."""
+    picker = escort.get("picker") or {}
+    status = _az1_escort_status(db, champ_id, escort)
+    pdata = state.setdefault("PublicState", {}).setdefault("Data", {})
+    pdata[str(picker.get("min_var"))] = 0
+    pdata[str(picker.get("max_var"))] = status["waiting"]
+    pdata[str(picker.get("count_var"))] = status["waiting"]
+    pdata.setdefault("escort_pickers", {})[str(picker.get("node"))] = \
+        str(escort.get("quest"))
+    data.update({
+        "type": "CountPicker", "conversationId": None, "encounter": None,
+        "completed": False, "repeatable": False, "autostart": True,
+        "enabled": True, "visible": True,
+        "min_var": "/" + str(picker.get("min_var")),
+        "max_var": "/" + str(picker.get("max_var")),
+        "count_var": "/" + str(picker.get("count_var")),
+    })
+
+
+def _az1_escort_picker_pending(state, node):
+    """The escort quest whose picker is open on *node*, else None."""
+    pdata = ((state or {}).get("PublicState") or {}).get("Data") or {}
+    return (pdata.get("escort_pickers") or {}).get(str(node or ""))
+
+
+def _az1_escort_arm_battles(state, escort):
+    """Reopen every escort battle for a new trip (Revival Gnomes.Pick)."""
+    battles = {str(node) for node in escort.get("battles") or []}
+    pdata = state.setdefault("PublicState", {}).setdefault("Data", {})
+    pdata["failed_nodes"] = [node for node in pdata.get("failed_nodes") or []
+                             if str(node) not in battles]
+    for loc in state.get("VisLocs") or []:
+        data = loc.get("Data") or {}
+        if str(data.get("node") or "") not in battles:
+            continue
+        data.update({"type": "Empty", "conversationId": None,
+                     "completed": False, "repeatable": False,
+                     "autostart": False, "pre_encounter": False,
+                     "pre_encounter_completed": False,
+                     "outcome_conversation": False})
+        data.pop("outcome_won", None)
+
+
+def _az1_escort_conversation_done(db, champ_id, state, data, conversation):
+    """An escort conversation closed at an AZ1 node.
+
+    Closing a delivery conversation brings the party in tow home (all home
+    completes the collect objectives); closing the picker node's dialogue
+    opens the CountPicker while the party is waiting.  Returns the quest
+    states whose journal changed.
+    """
+    node = str(data.get("node") or "")
+    changed = []
+    names = {str(guid): str(trigger.get("label") or name or "").lower()
+             for guid, trigger, _priority, name in
+             _az1_node_conversation_rows(db, node)}
+    played = names.get(str(conversation or ""), "")
+    for escort in _az1_escorts():
+        deliver = escort.get("deliver") or {}
+        if (str(deliver.get("node")) == node and played and any(
+                played.endswith(str(label).lower())
+                for label in deliver.get("conversations") or [])):
+            status = _az1_escort_status(db, champ_id, escort)
+            if status["carried"] > 0:
+                delivered = min(status["total"],
+                                status["delivered"] + status["carried"])
+                qstate = _az1_escort_update(db, champ_id, escort,
+                                            carried=0, delivered=delivered)
+                if delivered >= status["total"]:
+                    qstate = _az1_escort_complete_collect(
+                        db, champ_id, escort) or qstate
+                if qstate:
+                    changed.append(qstate)
+                # Without a party the battles fall back to their dialogue
+                # (all home: the remaining one-time battles stay).
+                _hydrate_az1_area_scene_metadata(
+                    db, state.get("VisLocs", []), champ_id=champ_id,
+                    state=state)
+        picker = escort.get("picker") or {}
+        if (str(picker.get("node")) == node and
+                _az1_escort_picker_due(db, champ_id, escort)):
+            _az1_escort_show_picker(db, champ_id, state, data, escort)
+            state["ALoc"] = data.get("name") or node
+    return changed
+
+
+def _az1_escort_complete_collect(db, champ_id, escort):
+    """Complete the escort's collect objectives: all are home."""
+    quest = str(escort.get("quest"))
+    wanted = {str((escort.get(key) or {}).get("objective"))
+              for key in ("carried", "delivered")}
+    qstate = None
+    for _step in range(len(wanted)):
+        _qid, current = _quest_state_row(db, champ_id, quest)
+        flags = (current or {}).get("Flags") or {}
+        objectives = flags.get("_quest_objectives") or []
+        index = _az1_escort_int(flags.get("_quest_objective_idx"))
+        if (not current or current.get("Finished") or
+                index >= len(objectives) or
+                str(objectives[index].get("id")) not in wanted):
+            break
+        qstate = _advance_quest_campaign(db, champ_id, quest) or qstate
+    if qstate:
+        qstate.setdefault("ChampID", champ_id)
+    return qstate
+
+
+def _az1_escort_count_choice(db, champ_id, state, params):
+    """The CountPicker's answer: that many travel with the champion."""
+    pickers = (((state.get("PublicState") or {}).get("Data") or {})
+               .get("escort_pickers") or {})
+    here = _resolve_node(state, str(state.get("ALoc") or
+                                    state.get("LastNode") or ""))
+    node = here if here in pickers else next(iter(pickers), None)
+    escort = _az1_escort(quest=_az1_escort_picker_pending(state, node))
+    if escort is None:
+        return None
+    status = _az1_escort_status(db, champ_id, escort)
+    try:
+        count = int((params or [0])[0])
+    except (TypeError, ValueError, IndexError):
+        count = 0
+    count = max(0, min(count, status["waiting"]))
+    qstate = _az1_escort_update(db, champ_id, escort, carried=count)
+    pdata = state.setdefault("PublicState", {}).setdefault("Data", {})
+    pdata.get("escort_pickers", {}).pop(str(node), None)
+    data = next(((loc.get("Data") or {}) for loc in state.get("VisLocs") or []
+                 if (loc.get("Data") or {}).get("node") == node), {})
+    for key in ("min_var", "max_var", "count_var"):
+        data.pop(key, None)
+    data.update({"type": "Convo", "completed": True, "autostart": False,
+                 "conversationId": _az1_node_conversation(
+                     db, node, state, champ_id=champ_id)})
+    if count > 0:
+        _az1_escort_arm_battles(state, escort)
+    state["ALoc"] = None
+    state["CurState"] = "EXPLORE"
+    _hydrate_az1_area_scene_metadata(
+        db, state.get("VisLocs", []), champ_id=champ_id, state=state)
+    _az1_reveal_neighbors(db, state, node)
+    return qstate
+
+
+def _az1_escort_deck_cards(db, champ_id, scene_guid):
+    """Cards the party in tow adds to the champion's deck for this battle."""
+    cards = []
+    if not champ_id or not scene_guid:
+        return cards
+    for escort in _az1_escorts():
+        scenes = {str((_az1_scene_for_node(db, node) or (None,))[0])
+                  for node in escort.get("battles") or []}
+        if str(scene_guid) not in scenes:
+            continue
+        carried = _az1_escort_status(db, champ_id, escort)["carried"]
+        for spec in escort.get("deck_cards") or []:
+            per = _az1_escort_int(spec.get("per")) or 1
+            cards.extend([str(spec.get("card"))] *
+                         (carried // per * _az1_escort_int(spec.get("count"))))
+    return [card for card in cards if card and card != "None"]
+
+
 def _az1_path_fork_ids(db):
     """Return authored AZ1 path-fork nodes from the persisted map topology."""
     try:
@@ -2503,10 +2873,42 @@ def _hydrate_az1_area_scene_metadata(db, locations, champ_id=None, state=None):
     dungeon_entrances = {template["entrance_scene"]: template
                          for template in _dungeon_template_rows(db)
                          if template["entrance_scene"]}
+    escort_disarmed = _az1_escort_disarmed_nodes(db, champ_id)
     for loc in locations or []:
         data = loc.get("Data") or {}
         node = data.get("node") or ""
+        picker_quest = _az1_escort_picker_pending(state, node)
+        if picker_quest:
+            # The escort's CountPicker stays open until count_choice.
+            escort = _az1_escort(quest=picker_quest)
+            if escort and _az1_escort_picker_due(db, champ_id, escort):
+                _az1_escort_show_picker(db, champ_id, state, data, escort)
+                continue
+            state["PublicState"]["Data"]["escort_pickers"].pop(str(node))
+            for key in ("min_var", "max_var", "count_var"):
+                data.pop(key, None)
+            if data.get("type") == "CountPicker":
+                data["type"] = "Convo"
         scene = _az1_location_scene(db, node, state, champ_id)
+        if (scene and str(node) in escort_disarmed and
+                not data.get("outcome_conversation")):
+            # An escort battle without a party in tow: its node dialogue
+            # only ("No Gnomes In Deck"), no battle (Revival Gnomes.IsFight).
+            conversation = _az1_node_conversation(
+                db, node, state, champ_id=champ_id)
+            if conversation:
+                visits = (((state or {}).get("PublicState") or {}).get(
+                    "Data") or {}).get("conversation_visits") or {}
+                visited = _az1_escort_int(visits.get(str(node))) > 0
+                data.update({
+                    "type": "Convo", "conversationId": conversation,
+                    "encounter": None, "pre_encounter": False,
+                    "pre_encounter_completed": False,
+                    "repeatable": visited and _az1_node_is_repeatable(
+                        db, node),
+                    "autostart": not data.get("completed") and not visited,
+                })
+                continue
         if not scene and _az1_hydrate_gate(db, node, data, state, champ_id):
             continue
         if not scene:
@@ -3154,6 +3556,10 @@ def _az1_reveal_neighbors(db, state, current_node=None):
         for node in (pdata.get("quest_hidden_nodes") or [])
         if node
     }
+    # Escort routes appear only with a party in tow (Gnomes Come Home's east
+    # and west desert); computed from the quest, never persisted.
+    forced_hidden.update(_az1_escort_hidden_nodes(
+        db, state.get("ChampID"), state))
     # Brink Ridge's opening conversation explains that the northern road is
     # closed by a blockade.  The authored graph stores those destinations as
     # Node021, Node023, and Node077, which are also the client prefab nodes
@@ -3943,7 +4349,11 @@ def _apply_az1_quest_markers(db, champ_id, state):
                 selected = guid
             elif role == "not_complete" and qstate and not qstate.get("Finished"):
                 selected = selected or guid
-        scripted = _az1_node_script_pick(db, champ_id, node, state)
+        # A node without quest rows takes its scripted dialogue only while
+        # it is a plain conversation (not an escort battle or its prelude).
+        scripted = (_az1_node_script_pick(db, champ_id, node, state)
+                    if rows or (data.get("type") == "Convo" and
+                                not data.get("pre_encounter")) else None)
         if scripted:
             selected = scripted[0]
             give = str(selected) in offered
@@ -6896,6 +7306,17 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
         else:
             log(f"    Campaign AZ1 choice refused: node={node} "
                 f"event={event_name} (not enough gold)")
+    elif (event_name == "count_choice" and
+          (ctype or "").upper() == "AREA" and
+          str(template_name or "").upper() == "AZ1"):
+        # The escort's CountPicker answer (UIDungeonZoneViewModel
+        # CountPicker_OnAccept): that many of the party travel along.
+        quest_state = _az1_escort_count_choice(db, champ_id, state, o_params)
+        if quest_state:
+            pending_quest_progress.append(quest_state)
+        else:
+            log(f"    Campaign count_choice ignored: no picker open "
+                f"(ALoc={state.get('ALoc')!r})")
     elif event_name == "visit_path":
         # The map client reports the authored path identifier separately from
         # StartLoc. Persist it so travelled paths remain lit after refresh.
@@ -7226,6 +7647,7 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
                                     (loc.get("Data") or {}).get("name"))),
                     {})
                 current_template = str(template_name or "").upper()
+                played_conversation = current_data.get("conversationId")
                 quest_variant_terminal = bool(
                     current_data.get("quest_variant_terminal"))
                 repeatable_convo = (
@@ -7423,6 +7845,15 @@ def _handle_sendevent(handler, db, env_json, comp, session_id,
                     state["ALoc"] = None
                 elif not current_data.get("shroomhaus_ready"):
                     state["ALoc"] = None
+                if (current_template == "AZ1" and
+                        current_data.get("type") == "Convo" and
+                        not outcome_convo and not pre_encounter_convo):
+                    # Gnomes Come Home: the south camp takes the party in
+                    # tow home; Herbert's camp opens the number picker.
+                    pending_quest_progress.extend(
+                        _az1_escort_conversation_done(
+                            db, champ_id, state, current_data,
+                            played_conversation))
                 # Conversation completion can change a repeatable node from
                 # an active prelude into its retryable map state. Recompute
                 # both node and edge visibility now; otherwise the newly
@@ -9325,7 +9756,24 @@ def resolve_battle_config(handler, db, camp_id, session_name):
         "fortune_ability_guids": fortune_ability_guids,
         "fortune_starting_hand_bonus": fortune_starting_hand_bonus,
         "mercenary_deck_cards": mercenary["deck_cards"] if mercenary else None,
+        # Template GUIDs added to the player's deck for this battle (the
+        # Lost Gnomes in tow and their Primal Shards, az1_node_variants.json
+        # "escorts").
+        "deck_extra_cards": _campaign_deck_extra_cards(db, camp_id, scene_guid),
     }
+
+
+def _campaign_deck_extra_cards(db, camp_id, scene_guid):
+    """Cards an AZ1 escort in tow adds to the champion's deck."""
+    if not camp_id:
+        return []
+    try:
+        row = pve_db.db_campaign_protocol_row(camp_id, conn=db)
+    except Exception:
+        return []
+    if not row or str(row[3] or "").upper() != "AZ1":
+        return []
+    return _az1_escort_deck_cards(db, row[0], scene_guid)
 
 
 def player_cannot_choose_play_first(db, camp_id):

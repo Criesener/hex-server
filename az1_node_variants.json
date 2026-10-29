@@ -30,5 +30,23 @@
       "choice_sneak": {"clears": true},
       "choice_Bribe": {"clears": true, "cost_gold": 1000}
     }
-  }
+  },
+  "_comment_escorts": "Issue #38 fix 10: Gnomes Come Home. An 'escort' is a quest whose party travels with the champion across the map (HEX Revival Gnomes.cs, video: Vandersveldt parts 41-54, MyHotStream Underworld 2016-10-30). The QuestTemplate gives 'quest', the two QuestObjectiveCollect counters ('carried': Step2_INFO 'Current gnomes', m_PublicScriptVar 'carry'; 'delivered': Step2 'Get all gnomes safely back to the south camp', m_PublicScriptVar 'count', m_CountRequired 20 = 'total') and 'found' (Step1, completed by Herbert's 'Lost Gnomes - Step 1'). Both counters live in the QUEST state's PublicState.Data under their script vars, which the client's quest tracker reads. 'picker': after the node's dialogue, while the party is found, none in tow and some still waiting, the node becomes the client's CountPicker ('Select Number of Gnomes', 0..waiting) and answers count_choice; the bounds are PublicState.Data vars of the AREA state. 'deliver': closing one of these conversations at the node brings the party in tow home; once all are home the collect objectives complete and the quest moves to its turn-in. 'routes' are hidden while no one is in tow (until all are home); 'battles' are fought only with a party in tow, re-armed for every trip (each pick reopens them), and stay one-time battles once all are home; without a party they play their node dialogue. 'deck_cards' are added to the champion's deck in those battles: 'count' copies per 'per' carried (one Lost Gnome per gnome, 2 Primal Shards per 3: the picker's text).",
+  "escorts": [
+    {
+      "quest": "q_gnomes_come_home",
+      "found": "Step1",
+      "carried": {"objective": "Step2_INFO", "var": "carry"},
+      "delivered": {"objective": "Step2", "var": "count"},
+      "total": 20,
+      "picker": {"node": "Node057", "min_var": "escort_min", "max_var": "escort_max", "count_var": "escort_count"},
+      "deliver": {"node": "Node053", "conversations": ["Abandoned Camp - Step 3", "Abandoned Camp - Step 4"]},
+      "routes": ["Node058", "Node059", "Node060", "Node061", "Node062", "Node063"],
+      "battles": ["Node055", "Node058", "Node059", "Node060", "Node062", "Node063"],
+      "deck_cards": [
+        {"card": "4ccb7e5f-bc32-4e9a-b1fe-abf944b27b74", "_name": "Lost Gnome", "per": 1, "count": 1},
+        {"card": "4b0e888e-ea2b-4674-acc8-a0292ad3b9ed", "_name": "Primal Shard", "per": 3, "count": 2}
+      ]
+    }
+  ]
 }

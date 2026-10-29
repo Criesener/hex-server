@@ -183,6 +183,7 @@ are selected from `quest_conversations` for the champion that owns the quest:
 | Wallace starts `Cross the Zodiac River` | reveal Shadowgrove and mark it; keep the west Zodiac bridge hidden |
 | Corrupt Dryad success → Wallace turn-in | advance the quest and unlock the west Zodiac bridge |
 | Warren completion | finish the Cross Zodiac quest and grant its authored card and pack |
+| Gnomes Come Home (`az1_node_variants.json` `escorts`) | Herbert's "Lost Gnomes - Step 1" (Node057) completes Step1 and opens the `CountPicker` (0..waiting); `count_choice` puts that many gnomes in tow (quest `PublicState.Data.carry`), shows the east/west routes (Node058-063) and arms the wurm battles (Node055/058-060/062-063, re-armed every trip, Lost Gnomes + 2 Primal Shards per 3 in the deck); the south camp's "Abandoned Camp - Step 3/4" (Node053) counts them home (`count`, 0/20); all home completes Step2_INFO/Step2, the unbeaten wurms stay one-time battles and Vincent's Quest End pays the turn-in |
 | Vale of Oberon with Fort Romor/Usurper | select the authored faction-quest conversation, keep Node00R retryable, and reveal/enable Lena Grotto; the finished-quest branch completes Node00R when closed |
 
 The legacy Cross-Zila objective omitted its encounter GUID in the source
@@ -330,7 +331,8 @@ following the client's rules:
 A gated node is forced open: it is made visible and unblocked, and the visit
 starts from a completed neighbour. If hydration closes the gate again, the
 visit is retried with each story opener: the Brink Ridge blockade result,
-or each quest granted.
+an escort's whole party in tow (Gnomes Come Home's routes and wurms), or each
+quest granted.  An escort's `CountPicker` is answered with the waiting party.
 
 SceneData locations that are not client map nodes (`Node019B`…, `Node023A/B`,
 `Node026A/B`) are listed as skipped.

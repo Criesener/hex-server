@@ -4104,6 +4104,193 @@ def test_three_braves_starts_at_the_robot_and_follows_its_steps():
         os.unlink(path)
 
 
+GNOMES = "q_gnomes_come_home"
+LOST_GNOME = "4ccb7e5f-bc32-4e9a-b1fe-abf944b27b74"
+PRIMAL_SHARD = "4b0e888e-ea2b-4674-acc8-a0292ad3b9ed"
+GNOME_WAYFARER = "0508927a-0e01-45c7-9413-81159898323c"
+GNOME_ROUTES = ("Node058", "Node059", "Node060", "Node061", "Node062",
+                "Node063")
+
+
+def _gnome_counters(db, champion_id):
+    _qid, quest = campaign._quest_state_row(db, champion_id, GNOMES)
+    data = quest["PublicState"]["Data"]
+    return data.get("carry", 0), data.get("count", 0)
+
+
+def _enter_desert_node(db, driver, champion_id, here, there):
+    """Stand on *here*, walk to *there*; returns the entered state."""
+    import campaign_map_check as check
+    area_id = _stand_next_to(db, champion_id, here, there)
+    driver.visit_node(area_id, there)
+    name = _node(check._load_state(db, area_id), there)["name"]
+    response, _pushes, error = driver.startloc(area_id, name)
+    assert error is None and response["Success"], (error, response)
+    return area_id, response["CurState"]
+
+
+def test_gnomes_come_home_escort_for_both_factions():
+    """Issue #38 fix 10 (Revival Gnomes.cs): Herbert's picker, the gnomes in
+    tow arming the desert wurms, the south camp counting them home, and
+    Vincent's turn-in, for Ardent (Node034) and Underworld (Node017)."""
+    import campaign_map_check as check
+    db, path = cloned_db()
+    names = _conversation_names()
+    try:
+        for champion, scene, hub, end in (
+                (6, AMBLING_MESA_SCENE, "Node034",
+                 "ca37a8bb-51c2-42e1-a677-1c6d4cc207e6"),
+                (4, CAVE_IN_SCENE, "Node017",
+                 "dfcc4fa9-47f3-4826-adca-ef42d0b35c34")):
+            _reset_quests(db, champion)
+            driver = check.Driver(db)
+            _talk(db, champion, scene, hub, "Vincent")
+            _qid, quest = campaign._quest_state_row(db, champion, GNOMES)
+            assert quest and quest["Flags"]["_quest_objective_idx"] == 0
+            # Finding Herbert is not handed in to Vincent.
+            _pano, npcs = _panorama(db, champion, scene, hub)
+            assert npcs["Vincent"]["turninquest"] is False, npcs["Vincent"]
+            assert "Not Complete" in names[npcs["Vincent"]["conversationId"]]
+
+            # No gnomes in tow: only the middle path, no wurm battles.
+            area_id, state = _enter_desert_node(
+                db, driver, champion, "Node054", "Node055")
+            queen = _node(state, "Node055")
+            assert queen["type"] == "Convo" and not queen["encounter"], queen
+            assert names[queen["conversationId"]].endswith(
+                "No Gnomes In Deck"), names[queen["conversationId"]]
+            driver.event(area_id, "conv_done")
+
+            # Herbert: Step 1 finds the gnomes, then the number picker.
+            area_id, state = _enter_desert_node(
+                db, driver, champion, "Node056", "Node057")
+            assert all(not _node(state, n)["visible"] for n in GNOME_ROUTES)
+            herbert = _node(state, "Node057")
+            assert names[herbert["conversationId"]].endswith(
+                "Lost Gnomes - Step 1"), names[herbert["conversationId"]]
+            response, pushes, _e = driver.event(area_id, "conv_done")
+            state = response["CurState"]
+            picker = _node(state, "Node057")
+            assert picker["type"] == "CountPicker", picker
+            assert state["ALoc"] == picker["name"] and picker["autostart"]
+            pdata = state["PublicState"]["Data"]
+            assert (pdata[picker["min_var"][1:]], pdata[picker["max_var"][1:]],
+                    pdata[picker["count_var"][1:]]) == (0, 20, 20), pdata
+            _qid, quest = campaign._quest_state_row(db, champion, GNOMES)
+            assert [(loc["Data"]["name"], loc["Data"]["type"],
+                     loc["Data"]["completed"]) for loc in quest["VisLocs"]] == [
+                ("Step1", "Convo", True), ("Step2_INFO", "Empty", False),
+                ("Step2", "Empty", False)], quest["VisLocs"]
+            assert any(p.get("Reason") == "quest_progress" for p in pushes)
+            # A reconnect keeps the picker open.
+            state = driver.state_request(area_id)[0]["CurState"]
+            assert _node(state, "Node057")["type"] == "CountPicker"
+
+            # Five gnomes travel along: the routes and their wurms appear.
+            response, pushes, _e = driver.event(area_id, "count_choice", [5])
+            state = response["CurState"]
+            assert state["ALoc"] is None
+            assert _node(state, "Node057")["type"] == "Convo"
+            assert _gnome_counters(db, champion) == (5, 0)
+            assert any(p.get("Reason") == "quest_progress" and
+                       p["State"]["PublicState"]["Data"]["carry"] == 5
+                       for p in pushes), pushes
+            assert _node(state, "Node058")["visible"]
+            assert _node(state, "Node061")["visible"]
+            queen = _node(state, "Node055")
+            assert queen.get("pre_encounter") and names[
+                queen["conversationId"]].endswith("Gnomes In Deck (Fight)")
+            assert not check.state_problems(db, state, "AZ1")
+
+            # The NE wurms: prelude, battle with the gnomes in the deck.
+            area_id, state = _enter_desert_node(
+                db, driver, champion, "Node057", "Node058")
+            wurms = _node(state, "Node058")
+            assert names[wurms["conversationId"]].endswith("NE Desert")
+            state = driver.event(area_id, "conv_done")[0]["CurState"]
+            wurms = _node(state, "Node058")
+            assert wurms["type"] == "Encounter", wurms
+            extra = campaign._campaign_deck_extra_cards(
+                db, area_id, wurms["encounter"])
+            assert sorted(extra) == sorted([LOST_GNOME] * 5 +
+                                           [PRIMAL_SHARD] * 2), extra
+            for wurm, xp in (("NODE 58 - EASY WURMS", 60),
+                             ("NODE 60 - EASY WURMS", 60),
+                             ("NODE 62 - ADULT WURMS", 90),
+                             ("NODE 63 - ADULT WURMS", 90)):
+                assert campaign._scene_reward_records(
+                    db, _scene_guid(db, "AZ 1 - " + wurm)) == [
+                    {"gold": 0, "xp": xp, "one_time": False}], wurm
+            _r, pushes, _e = driver.event(area_id, "start")
+            assert any(p.get("RequestType") == "gamestarted" for p in pushes)
+            driver.battle_won(area_id)
+            assert _node(check._load_state(db, area_id), "Node058")[
+                "completed"]
+
+            # The south camp: five home, the rest still waiting.
+            area_id, state = _enter_desert_node(
+                db, driver, champion, "Node054", "Node053")
+            camp = _node(state, "Node053")
+            assert names[camp["conversationId"]].endswith(
+                "Abandoned Camp - Step 3"), names[camp["conversationId"]]
+            response, pushes, _e = driver.event(area_id, "conv_done")
+            state = response["CurState"]
+            assert _gnome_counters(db, champion) == (0, 5)
+            assert all(not _node(state, n)["visible"] for n in GNOME_ROUTES)
+            assert _node(state, "Node055")["type"] == "Convo"
+            assert campaign._campaign_deck_extra_cards(
+                db, area_id, _scene_guid(db, "AZ 1 - NODE 58 - EASY WURMS")) \
+                == []
+
+            # Second trip with the other fifteen: the battles are armed again.
+            area_id, state = _enter_desert_node(
+                db, driver, champion, "Node056", "Node057")
+            assert names[_node(state, "Node057")["conversationId"]].endswith(
+                "Lost Gnomes - Step 2")
+            state = driver.event(area_id, "conv_done")[0]["CurState"]
+            picker = _node(state, "Node057")
+            assert state["PublicState"]["Data"][picker["max_var"][1:]] == 15
+            state = driver.event(area_id, "count_choice", [99])[0]["CurState"]
+            assert _gnome_counters(db, champion) == (15, 5)
+            assert not _node(state, "Node058")["completed"]
+            area_id, state = _enter_desert_node(
+                db, driver, champion, "Node054", "Node053")
+            assert names[_node(state, "Node053")["conversationId"]].endswith(
+                "Abandoned Camp - Step 4")
+            response, pushes, _e = driver.event(area_id, "conv_done")
+            state = response["CurState"]
+            assert _gnome_counters(db, champion) == (0, 20)
+            _qid, quest = campaign._quest_state_row(db, champion, GNOMES)
+            assert quest["Flags"]["_quest_objective_idx"] == 3, quest["Flags"]
+            assert campaign._quest_is_turnin_ready(quest)
+            # All home: the routes stay, the wurms not beaten on the last
+            # trip are one-time battles, the queen surfaces.
+            assert _node(state, "Node058")["visible"]
+            assert _node(state, "Node058").get("pre_encounter")
+            queen = _node(state, "Node055")
+            assert names[queen["conversationId"]].endswith(
+                "Wormoid Queen Surfaces"), names[queen["conversationId"]]
+            assert campaign._campaign_deck_extra_cards(
+                db, area_id, _scene_guid(db, "AZ 1 - NODE 55 - HARD WURMS")) \
+                == []
+            assert not check.state_problems(db, state, "AZ1")
+
+            # Vincent pays the quest: 500 gold, 500 XP, Gnome Wayfarer, pack.
+            _pano, npcs = _panorama(db, champion, scene, hub)
+            assert npcs["Vincent"]["conversationId"] == end, npcs["Vincent"]
+            assert npcs["Vincent"]["turninquest"] is True
+            applied, _npcs = _talk(db, champion, scene, hub, "Vincent")
+            _qid, quest = campaign._quest_state_row(db, champion, GNOMES)
+            assert quest["FinishReason"] == "Complete", quest
+            assert _granted(applied, "GOLD") == [("", 500)], applied
+            assert _granted(applied, "XP") == [("", 500)], applied
+            assert _granted(applied, "CARD") == [(GNOME_WAYFARER, 1)]
+            assert _granted(applied, "CHEST") == [(HOWLING_PLAINS_PACK, 1)]
+    finally:
+        db.close()
+        os.unlink(path)
+
+
 if __name__ == "__main__":
     tests = [
         test_cross_zila_objective_is_linked_to_savage_lord,
@@ -4175,6 +4362,7 @@ if __name__ == "__main__":
         test_takumi_tamed_quest_is_the_not_complete_conversation,
         test_blood_gate_opens_with_blood_beneath,
         test_three_braves_starts_at_the_robot_and_follows_its_steps,
+        test_gnomes_come_home_escort_for_both_factions,
         test_brink_ridge_blockade_fight_sneak_and_bribe_open_the_north,
         test_brink_ridge_bribe_needs_the_gold_and_a_lost_fight_asks_again,
         test_brink_ridge_zombies_follow_the_smoldering_dead_once,

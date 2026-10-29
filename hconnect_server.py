@@ -17243,6 +17243,9 @@ class HCPHandler(ProfileStreamMixin):
                 self._campaign_fortune_starting_hand_bonus = int(
                     cfg.get("fortune_starting_hand_bonus", 0) or 0)
                 mercenary_deck_cards = cfg.get("mercenary_deck_cards")
+                deck_extra_cards = list(cfg.get("deck_extra_cards") or ())
+                if deck_extra_cards:
+                    log_req(f"    Campaign deck extras: {len(deck_extra_cards)} cards")
                 log_req(f"    Campaign battle: player_deck={deck_db_id} player={player_champ_name} ai={ai_name} ai_deck={ai_deck_guid} scene={scene_guid} player_champ={player_champ_guid}"
                         + (f" mercenary_deck={len(mercenary_deck_cards)} cards" if mercenary_deck_cards else ""))
             else:
@@ -17559,6 +17562,10 @@ class HCPHandler(ProfileStreamMixin):
                 log_req(f"    Deck equipment: {deck_equipment}")
             if deck_rows and deck_rows[0]:
                 card_ids = _json.loads(deck_rows[0])
+                if is_campaign:
+                    # Template GUIDs the campaign adds for this battle only
+                    # (an AZ1 escort's Lost Gnomes and Primal Shards).
+                    card_ids.extend(deck_extra_cards)
                 random.shuffle(card_ids)
                 for pos, card_ref in enumerate(card_ids):  # Push full deck
                     cid = game._new_card_id()

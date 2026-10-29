@@ -1411,6 +1411,19 @@ QUEST_OBJECTIVE_ENCOUNTER_LINKS = {
     ("az01_q_cross_the_river", "Step1"): AZ1_SAVAGE_LORD_SCENE_GUID,
 }
 
+# QuestObjectiveConversation.m_ConversationIdList entries the extracted
+# quest_templates rows lack (the extractor reads only m_ConversationIdOld).
+# Without them a mid-quest objective falls back to the quest's turn-in
+# conversations, so Gnomes Come Home's "Find the lost gnomes" could be
+# handed in to Vincent at once.  The IDs are the QuestTemplate's own.
+QUEST_OBJECTIVE_CONVERSATION_LINKS = {
+    # Herbert, "Lost Gnomes - Step 1" (Node057).
+    ("q_gnomes_come_home", "Step1"): ("5c8c1188-cde5-4a0f-81bf-2316771b68ae",),
+    # Vincent's "Quest End" (Underworld, Ardent).
+    ("q_gnomes_come_home", "Step3"): ("dfcc4fa9-47f3-4826-adca-ef42d0b35c34",
+                                      "ca37a8bb-51c2-42e1-a677-1c6d4cc207e6"),
+}
+
 # Quest turn-in rewards (HEX Revival PROGRESSION.md "Quest rewards", the
 # reward window after the giver's last conversation, video-backed).  Keyed
 # by the authored "Quest End" conversations of both factions / races.
@@ -1481,7 +1494,7 @@ QUEST_START_RULE_SEEDS = (
     ("az01_q_fort_romor", 1, (), ()),
     ("q_army_of_myth", 1, (), ()),
     ("q_blood_beneath", 1, (), ()),
-    # Start only; the gnome picker/route mechanics are not implemented.
+    # Started at Vincent; the escort itself is az1_node_variants.json "escorts".
     ("q_gnomes_come_home", 1, (), ()),
     ("q_smoldering_dead", 1, ("q_army_of_myth",), ()),
     ("q_devonshire_keep", 1, ("q_smoldering_dead",), ()),
@@ -1511,9 +1524,13 @@ QUEST_CONVERSATION_SEEDS = (
 # with, else containing, the label).  Conditions: started / not_started /
 # finished / not_finished: a quest script; done / not_done: [script, loc...]
 # (every / none of the objective locations completed, a finished quest counts
-# as done); node_choice: [node, event]; any / all: lists of conditions.  A
+# as done); node_choice: [node, event]; visited: a node whose conversation
+# was played before; escort: {quest, carried, all_home, last_trip} (booleans
+# over the party of an az1_node_variants.json escort: some in tow, all home,
+# the party in tow is the last of it); any / all: lists of conditions.  A
 # ``gate`` conversation keeps the way closed: its node is not completed.
 _BRAVES = "az01_three_braves"
+_GNOMES = "q_gnomes_come_home"
 AZ1_NODE_SCRIPT_SEEDS = {
     "Node046": (
         ("Robot - Step 1", {"any": [
@@ -1543,6 +1560,38 @@ AZ1_NODE_SCRIPT_SEEDS = {
     "Node037": (
         ("Blood Gate - Step 2", {"started": "q_blood_beneath"}, 0),
         ("Blood Gate - Step 1", {}, 1),
+    ),
+    # Gnomes Come Home (Revival NodeScripts / Gnomes.cs).  The Wildwood with
+    # Vincent's map.
+    "Node044": (
+        ("Bungle in the Jungle - Step 2", {"started": _GNOMES}, 0),
+        ("Bungle in the Jungle - Step 1", {}, 0),
+    ),
+    # North Desert: Herbert is found once (the quest's Step1), then the
+    # remaining gnomes wait for the next trip (the picker follows).
+    "Node057": (
+        ("Lost Gnomes - Step 1", {"started": _GNOMES,
+                                  "not_done": [_GNOMES, "Step1"]}, 0),
+        ("Lost Gnomes - Step 2", {}, 0),
+    ),
+    # South camp: the last gnomes home (Step 4), some home (Step 3), the
+    # camp revisited (Step 2), the abandoned camp and Herbert's journal.
+    "Node053": (
+        ("Abandoned Camp - Step 4", {"escort": {"quest": _GNOMES,
+                                                "last_trip": True}}, 0),
+        ("Abandoned Camp - Step 3", {"escort": {"quest": _GNOMES,
+                                                "carried": True}}, 0),
+        ("Abandoned Camp - Step 2", {"visited": "Node053"}, 0),
+        ("Abandoned Camp - Step 1", {}, 0),
+    ),
+    # Deep Desert: the Wormoid Queen attacks gnomes in tow; once all are home
+    # she surfaces for a one-time battle; otherwise only her crater.
+    "Node055": (
+        ("Gnomes In Deck (Fight)", {"escort": {"quest": _GNOMES,
+                                               "carried": True}}, 0),
+        ("Wormoid Queen Surfaces", {"escort": {"quest": _GNOMES,
+                                               "all_home": True}}, 0),
+        ("No Gnomes In Deck", {}, 0),
     ),
 }
 
@@ -1992,6 +2041,31 @@ def _seed_az1_quest_progression(db):
             [(node, order, label, json.dumps(when, sort_keys=True), gate)
              for order, (label, when, gate) in enumerate(rules)])
     _repair_dungeon_objectives(db)
+    _repair_objective_conversations(db)
+
+
+def _repair_objective_conversations(db):
+    """Give objectives their authored conversations (idempotent)."""
+    for (script, objective_id), guids in \
+            QUEST_OBJECTIVE_CONVERSATION_LINKS.items():
+        row = db.execute("SELECT objectives_json FROM quest_templates "
+                         "WHERE script_name=?", (script,)).fetchone()
+        try:
+            objectives = json.loads(row[0] or "[]") if row else []
+        except (TypeError, ValueError):
+            continue
+        changed = False
+        for objective in objectives if isinstance(objectives, list) else []:
+            if (isinstance(objective, dict) and
+                    str(objective.get("id") or "") == objective_id and
+                    not objective.get("conversation_ids")):
+                objective["conversation_ids"] = list(guids)
+                objective["conversation"] = guids[0]
+                changed = True
+        if changed:
+            db.execute("UPDATE quest_templates SET objectives_json=? "
+                       "WHERE script_name=?",
+                       (json.dumps(objectives, sort_keys=True), script))
 
 
 def _merge_conversation_reward_seeds(db):
